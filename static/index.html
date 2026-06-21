@@ -3,20 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>漕船粮包堆码模拟系统 v2.0</title>
+    <title>漕船粮包堆码模拟系统 v3.0</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <header class="header">
         <div class="header-icon">🚢</div>
         <div>
-            <h1>漕船粮包堆码模拟系统 <span class="version-badge">v2.0</span></h1>
-            <p>多方案智能生成 · 风险评估与处置 · 湿度海况批量对比</p>
+            <h1>漕船粮包堆码模拟系统 <span class="version-badge">v3.0</span></h1>
+            <p>多方案智能生成 · 风险评估与处置 · 湿度海况批量对比 · 运输过程监测预警</p>
         </div>
     </header>
 
     <div class="main-layout">
         <aside class="panel">
+            <div class="nav-tabs">
+                <div class="nav-tab active" id="nav_sim" onclick="switchModule('sim')">📦 堆码模拟</div>
+                <div class="nav-tab" id="nav_monitor" onclick="switchModule('monitor')">📡 运输监测</div>
+            </div>
+
+            <div id="panel_sim">
             <div class="section-title">船舱参数</div>
             <div class="form-group">
                 <label>船舱长 (m)</label>
@@ -151,6 +157,130 @@
             <button class="btn-secondary" id="btn_compare" onclick="runComparison()">⚖ 对比装载方式</button>
             <div style="height:10px;"></div>
             <button class="btn-tertiary" id="btn_batch" onclick="runBatchCompare()">📊 湿度×海况矩阵对比</button>
+            </div>
+
+            <div id="panel_monitor" style="display:none;">
+            <div class="section-title">航次信息</div>
+            <div class="form-group">
+                <label>航次编号</label>
+                <input type="text" id="mon_voyage_id" value="VY-2026-001" placeholder="例: VY-2026-001">
+            </div>
+
+            <hr class="divider">
+            <div class="section-title">📡 每日监测记录</div>
+            <div class="form-group">
+                <label>记录日期</label>
+                <input type="date" id="mon_record_date">
+            </div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>舱内湿度 (%)</label>
+                    <input type="number" id="mon_humidity" value="65" min="0" max="100" step="1">
+                </div>
+                <div class="form-group">
+                    <label>舱内温度 (°C)</label>
+                    <input type="number" id="mon_temperature" value="25" min="-20" max="60" step="0.5">
+                </div>
+            </div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>船体摇晃等级</label>
+                    <select id="mon_rocking">
+                        <option value="calm">平静</option>
+                        <option value="slight">轻微摇晃</option>
+                        <option value="moderate">中等摇晃</option>
+                        <option value="rough">剧烈摇晃</option>
+                        <option value="very_rough">极端摇晃</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>抽检粮包状态</label>
+                    <select id="mon_bag_status">
+                        <option value="normal">正常</option>
+                        <option value="compressed">压损变形</option>
+                        <option value="damp">受潮</option>
+                        <option value="moldy">发霉</option>
+                        <option value="damaged">破损</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>抽检备注</label>
+                <input type="text" id="mon_bag_note" placeholder="抽检发现的情况说明">
+            </div>
+
+            <hr class="divider">
+            <div class="section-title">⚠ 异常事件</div>
+            <div id="mon_event_list"></div>
+            <div class="form-row-2" style="margin-top:8px;">
+                <div class="form-group">
+                    <select id="mon_event_type">
+                        <option value="humidity_spike">湿度突升</option>
+                        <option value="temp_spike">温度异常</option>
+                        <option value="pressure_worsen">压损恶化</option>
+                        <option value="moisture_spread">受潮扩散</option>
+                        <option value="bag_damage">粮包破损</option>
+                        <option value="hull_shake">船体剧烈摇晃</option>
+                        <option value="water_leak">渗水漏水</option>
+                        <option value="other">其他异常</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <input type="text" id="mon_event_desc" placeholder="异常描述">
+                </div>
+            </div>
+            <button class="btn-small" onclick="addMonitorEvent()">+ 添加异常事件</button>
+
+            <hr class="divider">
+            <div class="form-group">
+                <label>备注</label>
+                <input type="text" id="mon_note" placeholder="其他记录说明">
+            </div>
+            <button class="btn-primary" id="btn_submit_record" onclick="submitDailyRecord()">📝 提交每日记录</button>
+            <div style="height:10px;"></div>
+
+            <hr class="divider">
+            <div class="section-title">🔍 查询与操作</div>
+            <div class="form-group">
+                <label>查询航次编号</label>
+                <input type="text" id="mon_query_voyage" value="VY-2026-001" placeholder="输入航次编号">
+            </div>
+            <button class="btn-secondary" onclick="queryVoyageRecords()">📋 查询每日记录</button>
+            <div style="height:8px;"></div>
+            <button class="btn-secondary" onclick="queryVoyageWarnings()">⚠ 查看预警历史</button>
+            <div style="height:8px;"></div>
+            <button class="btn-tertiary" onclick="queryVoyageSummary()">📊 风险趋势与汇总</button>
+            <div style="height:8px;"></div>
+
+            <hr class="divider">
+            <div class="section-title">🚨 异常上报</div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <select id="report_event_type">
+                        <option value="humidity_spike">湿度突升</option>
+                        <option value="temp_spike">温度异常</option>
+                        <option value="pressure_worsen">压损恶化</option>
+                        <option value="moisture_spread">受潮扩散</option>
+                        <option value="bag_damage">粮包破损</option>
+                        <option value="hull_shake">船体剧烈摇晃</option>
+                        <option value="water_leak">渗水漏水</option>
+                        <option value="other">其他异常</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <select id="report_severity">
+                        <option value="low">低风险</option>
+                        <option value="medium" selected>中风险</option>
+                        <option value="high">高风险</option>
+                        <option value="critical">极高风险</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <input type="text" id="report_description" placeholder="异常情况描述">
+            </div>
+            <button class="btn-danger" onclick="submitAbnormalReport()">🚨 提交异常上报</button>
+            </div>
         </aside>
 
         <main class="content" id="main_content">
@@ -161,6 +291,7 @@
                     <div class="hint-card"><span class="hint-icon">▶</span><div><b>当前方案模拟</b><p>针对输入参数的单次详细评估</p></div></div>
                     <div class="hint-card"><span class="hint-icon">🎯</span><div><b>智能生成多方案</b><p>自动组合层数×装载方式，按优先级推荐</p></div></div>
                     <div class="hint-card"><span class="hint-icon">📊</span><div><b>湿度×海况矩阵</b><p>批量对比不同环境条件下的风险</p></div></div>
+                    <div class="hint-card"><span class="hint-icon">📡</span><div><b>运输过程监测</b><p>记录每日舱内环境与粮包状态，自动预警</p></div></div>
                 </div>
             </div>
         </main>

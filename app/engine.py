@@ -1,4 +1,6 @@
 import math
+from datetime import date, datetime
+from typing import Optional
 from app.models import (
     SimulationRequest,
     SimulationResult,
@@ -16,6 +18,24 @@ from app.models import (
     BatchCompareRequest,
     BatchCell,
     BatchCompareResult,
+    DailyMonitorInput,
+    DailyMonitorOutput,
+    WarningRecordOutput,
+    WarningLevel,
+    DisposalStatus,
+    BagCheckStatus,
+    RockingLevel,
+    AbnormalEventType,
+    AbnormalEventInput,
+    RiskTrendPoint,
+    DisposalUpdateInput,
+    AbnormalReportInput,
+    VoyageSummaryOutput,
+    WARNING_LEVEL_LABELS,
+    DISPOSAL_STATUS_LABELS,
+    BAG_STATUS_LABELS,
+    ROCKING_LEVEL_LABELS,
+    ABNORMAL_EVENT_LABELS,
 )
 
 GRAIN_DENSITY_FACTOR = {
@@ -606,3 +626,617 @@ def batch_compare(req: BatchCompareRequest) -> BatchCompareResult:
         best_cell=best_cell_info,
         is_any_formal=is_any_formal,
     )
+
+
+_monitor_store: dict = {}
+_warning_store: dict = {}
+_record_counter = 0
+_warning_counter = 0
+
+
+def _next_record_id():
+    global _record_counter
+    _record_counter += 1
+    return f"rec_{_record_counter:05d}"
+
+
+def _next_warning_id():
+    global _warning_counter
+    _warning_counter += 1
+    return f"warn_{_warning_counter:05d}"
+
+
+ROCKING_RISK_SCORE = {
+    RockingLevel.calm: 0.0,
+    RockingLevel.slight: 0.15,
+    RockingLevel.moderate: 0.35,
+    RockingLevel.rough: 0.65,
+    RockingLevel.very_rough: 0.90,
+}
+
+BAG_STATUS_RISK_SCORE = {
+    BagCheckStatus.normal: 0.0,
+    BagCheckStatus.compressed: 0.3,
+    BagCheckStatus.damp: 0.5,
+    BagCheckStatus.moldy: 0.7,
+    BagCheckStatus.damaged: 0.85,
+}
+
+HUMIDITY_RISK_THRESHOLD_LOW = 55.0
+HUMIDITY_RISK_THRESHOLD_MED = 70.0
+HUMIDITY_RISK_THRESHOLD_HIGH = 85.0
+TEMP_RISK_THRESHOLD_LOW = 28.0
+TEMP_RISK_THRESHOLD_MED = 33.0
+TEMP_RISK_THRESHOLD_HIGH = 38.0
+
+
+def _calculate_pressure_risk(rocking_level: RockingLevel, bag_status: BagCheckStatus) -> float:
+    base = ROCKING_RISK_SCORE.get(rocking_level, 0.0)
+    bag_factor = BAG_STATUS_RISK_SCORE.get(bag_status, 0.0)
+    return min(1.0, base * 0.6 + bag_factor * 0.4) if bag_status == BagCheckStatus.compressed else base * 0.7
+
+
+def _calculate_moisture_risk_monitor(humidity: float, temperature: float, bag_status: BagCheckStatus) -> float:
+    hum_score = 0.0
+    if humidity >= HUMIDITY_RISK_THRESHOLD_HIGH:
+        hum_score = 0.9
+    elif humidity >= HUMIDITY_RISK_THRESHOLD_MED:
+        hum_score = 0.6
+    elif humidity >= HUMIDITY_RISK_THRESHOLD_LOW:
+        hum_score = 0.3
+
+    temp_score = 0.0
+    if temperature >= TEMP_RISK_THRESHOLD_HIGH:
+        temp_score = 0.8
+    elif temperature >= TEMP_RISK_THRESHOLD_MED:
+        temp_score = 0.5
+    elif temperature >= TEMP_RISK_THRESHOLD_LOW:
+        temp_score = 0.2
+
+    bag_factor = 0.0
+    if bag_status in (BagCheckStatus.damp, BagCheckStatus.moldy):
+        bag_factor = BAG_STATUS_RISK_SCORE.get(bag_status, 0.0) * 0.5
+
+    return min(1.0, hum_score * 0.5 + temp_score * 0.25 + bag_factor * 0.25)
+
+
+def _calculate_shake_risk(rocking_level: RockingLevel) -> float:
+    return ROCKING_RISK_SCORE.get(rocking_level, 0.0)
+
+
+def _compute_risk_score(
+    humidity: float, temperature: float, rocking_level: RockingLevel,
+    bag_status: BagCheckStatus
+) -> tuple:
+    pressure_risk = _calculate_pressure_risk(rocking_level, bag_status)
+    moisture_risk = _calculate_moisture_risk_monitor(humidity, temperature, bag_status)
+    shake_risk = _calculate_shake_risk(rocking_level)
+
+    composite = pressure_risk * 0.3 + moisture_risk * 0.4 + shake_risk * 0.3
+    return round(min(1.0, composite), 4), pressure_risk, moisture_risk, shake_risk
+
+
+def _risk_score_to_warning_level(score: float) -> WarningLevel:
+    if score < 0.2:
+        return WarningLevel.normal
+    elif score < 0.4:
+        return WarningLevel.low
+    elif score < 0.6:
+        return WarningLevel.medium
+    elif score < 0.8:
+        return WarningLevel.high
+    else:
+        return WarningLevel.critical
+
+
+def _generate_warnings_for_record(
+    voyage_id: str, rec_date: date, humidity: float, temperature: float,
+    rocking_level: RockingLevel, bag_status: BagCheckStatus,
+    risk_score: float, pressure_risk: float, moisture_risk: float,
+    shake_risk: float, abnormal_events: list
+) -> list:
+    warnings = []
+
+    if humidity >= HUMIDITY_RISK_THRESHOLD_HIGH:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.high if humidity < 92 else WarningLevel.critical,
+            warning_type="humidity_spike",
+            warning_message=f"舱内湿度{humidity}%严重超标（阈值{HUMIDITY_RISK_THRESHOLD_HIGH}%），受潮扩散风险极高",
+            risk_score=moisture_risk,
+        ))
+    elif humidity >= HUMIDITY_RISK_THRESHOLD_MED:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.medium,
+            warning_type="humidity_spike",
+            warning_message=f"舱内湿度{humidity}%偏高（阈值{HUMIDITY_RISK_THRESHOLD_MED}%），需加强通风和除湿",
+            risk_score=moisture_risk,
+        ))
+
+    if temperature >= TEMP_RISK_THRESHOLD_HIGH:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.critical,
+            warning_type="temp_spike",
+            warning_message=f"舱内温度{temperature}°C严重超标（阈值{TEMP_RISK_THRESHOLD_HIGH}°C），粮食品质快速衰减",
+            risk_score=moisture_risk,
+        ))
+    elif temperature >= TEMP_RISK_THRESHOLD_MED:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.medium,
+            warning_type="temp_spike",
+            warning_message=f"舱内温度{temperature}°C偏高（阈值{TEMP_RISK_THRESHOLD_MED}°C），需关注粮温变化",
+            risk_score=moisture_risk * 0.6,
+        ))
+
+    if rocking_level in (RockingLevel.rough, RockingLevel.very_rough):
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.high if rocking_level == RockingLevel.rough else WarningLevel.critical,
+            warning_type="hull_shake",
+            warning_message=f"船体摇晃等级{ROCKING_LEVEL_LABELS[rocking_level]}，粮包移位和压损恶化风险显著",
+            risk_score=shake_risk,
+        ))
+
+    if bag_status == BagCheckStatus.compressed:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.medium,
+            warning_type="pressure_worsen",
+            warning_message="抽检发现粮包压损变形，底层承压可能超标，需检查堆码稳定性",
+            risk_score=pressure_risk,
+        ))
+    elif bag_status == BagCheckStatus.damp:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.high,
+            warning_type="moisture_spread",
+            warning_message="抽检发现粮包受潮，受潮区域可能正在扩散，需紧急处置",
+            risk_score=moisture_risk,
+        ))
+    elif bag_status == BagCheckStatus.moldy:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.critical,
+            warning_type="moisture_spread",
+            warning_message="抽检发现粮包发霉，品质已受损，必须立即处置防止扩散",
+            risk_score=moisture_risk,
+        ))
+    elif bag_status == BagCheckStatus.damaged:
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=WarningLevel.high,
+            warning_type="bag_damage",
+            warning_message="抽检发现粮包破损，粮食散漏风险增大，需加固补包",
+            risk_score=0.6,
+        ))
+
+    for evt in abnormal_events:
+        evt_type = evt.get("event_type", evt.event_type if hasattr(evt, "event_type") else "other")
+        evt_desc = evt.get("description", evt.description if hasattr(evt, "description") else "")
+        evt_label = ABNORMAL_EVENT_LABELS.get(AbnormalEventType(evt_type), evt_type) if isinstance(evt_type, str) else str(evt_type)
+        if evt_type in ("water_leak", "pressure_worsen"):
+            lvl = WarningLevel.critical
+        elif evt_type in ("moisture_spread", "bag_damage"):
+            lvl = WarningLevel.high
+        else:
+            lvl = WarningLevel.medium
+        warnings.append(WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=voyage_id,
+            record_date=rec_date,
+            warning_level=lvl,
+            warning_type=evt_type,
+            warning_message=f"异常事件：{evt_label}" + (f" - {evt_desc}" if evt_desc else ""),
+            risk_score=risk_score,
+        ))
+
+    return warnings
+
+
+def _detect_trend_anomalies(records: list) -> list:
+    anomalies = []
+    if len(records) < 2:
+        return anomalies
+
+    sorted_recs = sorted(records, key=lambda r: r["record_date"])
+    for i in range(1, len(sorted_recs)):
+        prev = sorted_recs[i - 1]
+        curr = sorted_recs[i]
+
+        hum_delta = curr["cabin_humidity"] - prev["cabin_humidity"]
+        if hum_delta > 15:
+            anomalies.append({
+                "type": "humidity_spike",
+                "date": str(curr["record_date"]),
+                "message": f"湿度日增幅{hum_delta:.1f}%（{prev['cabin_humidity']:.1f}%→{curr['cabin_humidity']:.1f}%），异常波动",
+            })
+
+        temp_delta = curr["cabin_temperature"] - prev["cabin_temperature"]
+        if temp_delta > 8:
+            anomalies.append({
+                "type": "temp_spike",
+                "date": str(curr["record_date"]),
+                "message": f"温度日增幅{temp_delta:.1f}°C（{prev['cabin_temperature']:.1f}°C→{curr['cabin_temperature']:.1f}°C），异常波动",
+            })
+
+        prev_risk = prev.get("risk_score", 0)
+        curr_risk = curr.get("risk_score", 0)
+        risk_delta = curr_risk - prev_risk
+        if risk_delta > 0.25:
+            anomalies.append({
+                "type": "risk_surge",
+                "date": str(curr["record_date"]),
+                "message": f"风险指数日增幅{risk_delta:.2f}（{prev_risk:.2f}→{curr_risk:.2f}），风险快速恶化",
+            })
+
+        prev_bag = prev.get("bag_check_status", "normal")
+        curr_bag = curr.get("bag_check_status", "normal")
+        bag_order = ["normal", "compressed", "damp", "moldy", "damaged"]
+        if bag_order.index(curr_bag) > bag_order.index(prev_bag) + 1:
+            anomalies.append({
+                "type": "pressure_worsen",
+                "date": str(curr["record_date"]),
+                "message": f"粮包状态跨级恶化（{BAG_STATUS_LABELS.get(BagCheckStatus(prev_bag), prev_bag)}→{BAG_STATUS_LABELS.get(BagCheckStatus(curr_bag), curr_bag)}），压损恶化",
+            })
+
+    return anomalies
+
+
+def _get_disposal_suggestion(warning_level: WarningLevel, warning_type: str) -> str:
+    suggestions = {
+        "humidity_spike": {
+            WarningLevel.low: "增加通风频次，放置干燥剂",
+            WarningLevel.medium: "启动除湿设备，检查舱体密封性，加强巡检至每4小时一次",
+            WarningLevel.high: "紧急除湿，排查渗漏源，对受潮区域粮包加铺防潮层",
+            WarningLevel.critical: "立即启动应急除湿，转移高风险粮包，上报指挥部",
+        },
+        "temp_spike": {
+            WarningLevel.medium: "加强通风散热，检查粮温是否异常升温",
+            WarningLevel.high: "启动降温设备，开舱散热（如海况允许），检查是否有自热现象",
+            WarningLevel.critical: "紧急降温，排查自热或火情隐患，转移高温区域粮包",
+        },
+        "hull_shake": {
+            WarningLevel.high: "加固绑绳和挡板，降低航速，检查堆码是否有位移",
+            WarningLevel.critical: "紧急停航避风，全面检查粮包位移和损伤情况",
+        },
+        "pressure_worsen": {
+            WarningLevel.medium: "检查底层粮包承压状况，必要时减层降压",
+            WarningLevel.high: "对压损区域粮包进行抽检和补包，调整堆码结构",
+        },
+        "moisture_spread": {
+            WarningLevel.high: "标记受潮扩散边界，对受潮粮包隔离处置，加大除湿力度",
+            WarningLevel.critical: "紧急隔离发霉粮包，全面消杀，防止霉变蔓延",
+        },
+        "bag_damage": {
+            WarningLevel.high: "对破损粮包紧急补包或换包，加固周围粮包防止连锁位移",
+        },
+        "water_leak": {
+            WarningLevel.critical: "紧急堵漏，排水，转移浸水粮包，上报指挥部请求靠港",
+        },
+    }
+    type_suggestions = suggestions.get(warning_type, {})
+    return type_suggestions.get(warning_level, "密切关注，按规范巡检处置")
+
+
+def create_daily_record(inp: DailyMonitorInput) -> DailyMonitorOutput:
+    risk_score, pressure_risk, moisture_risk, shake_risk = _compute_risk_score(
+        inp.cabin_humidity, inp.cabin_temperature, inp.rocking_level, inp.bag_check_status
+    )
+
+    warning_level = _risk_score_to_warning_level(risk_score)
+
+    abnormal_dicts = [
+        {"event_type": e.event_type.value, "description": e.description}
+        for e in inp.abnormal_events
+    ]
+
+    generated_warnings = _generate_warnings_for_record(
+        inp.voyage_id, inp.record_date, inp.cabin_humidity, inp.cabin_temperature,
+        inp.rocking_level, inp.bag_check_status, risk_score, pressure_risk,
+        moisture_risk, shake_risk, abnormal_dicts
+    )
+
+    record_id = _next_record_id()
+    record = {
+        "record_id": record_id,
+        "voyage_id": inp.voyage_id,
+        "record_date": inp.record_date,
+        "cabin_humidity": inp.cabin_humidity,
+        "cabin_temperature": inp.cabin_temperature,
+        "rocking_level": inp.rocking_level.value,
+        "bag_check_status": inp.bag_check_status.value,
+        "bag_check_note": inp.bag_check_note,
+        "abnormal_events": abnormal_dicts,
+        "note": inp.note,
+        "warning_level": warning_level.value,
+        "risk_score": risk_score,
+        "pressure_risk": pressure_risk,
+        "moisture_risk": moisture_risk,
+        "shake_risk": shake_risk,
+        "disposal_status": DisposalStatus.pending.value,
+        "transport_status": "正常",
+        "created_at": datetime.now().isoformat(),
+    }
+
+    if warning_level in (WarningLevel.high, WarningLevel.critical):
+        record["transport_status"] = "异常待处置"
+        record["disposal_status"] = DisposalStatus.pending.value
+
+    _monitor_store[record_id] = record
+
+    for w in generated_warnings:
+        w.is_high_risk_unresolved = (
+            w.warning_level in (WarningLevel.high, WarningLevel.critical)
+            and w.disposal_status != DisposalStatus.closed
+        )
+        _warning_store[w.warning_id] = w.model_dump()
+
+    voyage_recs = [r for r in _monitor_store.values() if r["voyage_id"] == inp.voyage_id]
+    anomalies = _detect_trend_anomalies(voyage_recs)
+    for a in anomalies:
+        a_warn = WarningRecordOutput(
+            warning_id=_next_warning_id(),
+            voyage_id=inp.voyage_id,
+            record_date=inp.record_date,
+            warning_level=WarningLevel.medium,
+            warning_type=a["type"],
+            warning_message=a["message"],
+            risk_score=risk_score,
+        )
+        _warning_store[a_warn.warning_id] = a_warn.model_dump()
+
+    all_warnings = _get_warnings_for_record(record_id)
+
+    return DailyMonitorOutput(
+        record_id=record_id,
+        voyage_id=inp.voyage_id,
+        record_date=inp.record_date,
+        cabin_humidity=inp.cabin_humidity,
+        cabin_temperature=inp.cabin_temperature,
+        rocking_level=inp.rocking_level,
+        bag_check_status=inp.bag_check_status,
+        bag_check_note=inp.bag_check_note,
+        abnormal_events=abnormal_dicts,
+        note=inp.note,
+        warning_level=warning_level,
+        risk_score=risk_score,
+        warnings=all_warnings,
+        disposal_status=DisposalStatus(record["disposal_status"]),
+        transport_status=record["transport_status"],
+        created_at=record["created_at"],
+    )
+
+
+def _get_warnings_for_record(record_id: str) -> list:
+    record = _monitor_store.get(record_id)
+    if not record:
+        return []
+    return [
+        WarningRecordOutput(**w) for w in _warning_store.values()
+        if w.get("voyage_id") == record["voyage_id"]
+        and str(w.get("record_date")) == str(record["record_date"])
+    ]
+
+
+def get_voyage_records(voyage_id: str) -> list:
+    records = sorted(
+        [r for r in _monitor_store.values() if r["voyage_id"] == voyage_id],
+        key=lambda r: r["record_date"]
+    )
+    results = []
+    for r in records:
+        warnings = _get_warnings_for_record(r["record_id"])
+        results.append(DailyMonitorOutput(
+            record_id=r["record_id"],
+            voyage_id=r["voyage_id"],
+            record_date=r["record_date"],
+            cabin_humidity=r["cabin_humidity"],
+            cabin_temperature=r["cabin_temperature"],
+            rocking_level=RockingLevel(r["rocking_level"]),
+            bag_check_status=BagCheckStatus(r["bag_check_status"]),
+            bag_check_note=r["bag_check_note"],
+            abnormal_events=r["abnormal_events"],
+            note=r["note"],
+            warning_level=WarningLevel(r["warning_level"]),
+            risk_score=r["risk_score"],
+            warnings=warnings,
+            disposal_status=DisposalStatus(r["disposal_status"]),
+            transport_status=r["transport_status"],
+            created_at=r["created_at"],
+        ))
+    return results
+
+
+def get_record_detail(record_id: str) -> Optional[DailyMonitorOutput]:
+    r = _monitor_store.get(record_id)
+    if not r:
+        return None
+    warnings = _get_warnings_for_record(r["record_id"])
+    return DailyMonitorOutput(
+        record_id=r["record_id"],
+        voyage_id=r["voyage_id"],
+        record_date=r["record_date"],
+        cabin_humidity=r["cabin_humidity"],
+        cabin_temperature=r["cabin_temperature"],
+        rocking_level=RockingLevel(r["rocking_level"]),
+        bag_check_status=BagCheckStatus(r["bag_check_status"]),
+        bag_check_note=r["bag_check_note"],
+        abnormal_events=r["abnormal_events"],
+        note=r["note"],
+        warning_level=WarningLevel(r["warning_level"]),
+        risk_score=r["risk_score"],
+        warnings=warnings,
+        disposal_status=DisposalStatus(r["disposal_status"]),
+        transport_status=r["transport_status"],
+        created_at=r["created_at"],
+    )
+
+
+def get_voyage_warnings(voyage_id: str) -> list:
+    return [
+        WarningRecordOutput(**w) for w in _warning_store.values()
+        if w.get("voyage_id") == voyage_id
+    ]
+
+
+def confirm_warning(warning_id: str, confirmed: bool = True) -> Optional[WarningRecordOutput]:
+    w = _warning_store.get(warning_id)
+    if not w:
+        return None
+    if confirmed:
+        w["disposal_status"] = DisposalStatus.confirmed.value
+    else:
+        w["disposal_status"] = DisposalStatus.pending.value
+    w["is_high_risk_unresolved"] = (
+        w["warning_level"] in (WarningLevel.high.value, WarningLevel.critical.value)
+        and w["disposal_status"] != DisposalStatus.closed.value
+    )
+    _warning_store[warning_id] = w
+    return WarningRecordOutput(**w)
+
+
+def update_disposal(record_id: str, upd: DisposalUpdateInput) -> Optional[DailyMonitorOutput]:
+    r = _monitor_store.get(record_id)
+    if not r:
+        return None
+
+    warning_level = WarningLevel(r["warning_level"])
+
+    if upd.transport_status == "运输正常":
+        voyage_warnings = [
+            w for w in _warning_store.values()
+            if w.get("voyage_id") == r["voyage_id"]
+            and str(w.get("record_date")) == str(r["record_date"])
+            and w["warning_level"] in (WarningLevel.high.value, WarningLevel.critical.value)
+            and w["disposal_status"] not in (DisposalStatus.completed.value, DisposalStatus.closed.value)
+        ]
+        if voyage_warnings:
+            raise ValueError("存在高风险未处置预警，不能标记为运输正常")
+
+    r["disposal_status"] = upd.disposal_status.value
+    if upd.disposal_action:
+        r["disposal_action"] = upd.disposal_action
+    if upd.transport_status:
+        r["transport_status"] = upd.transport_status
+
+    if upd.disposal_status in (DisposalStatus.completed, DisposalStatus.closed):
+        rec_date = r["record_date"]
+        for w in _warning_store.values():
+            if (w.get("voyage_id") == r["voyage_id"]
+                    and str(w.get("record_date")) == str(rec_date)):
+                w["disposal_status"] = upd.disposal_status.value
+                w["disposal_action"] = upd.disposal_action or w.get("disposal_action", "")
+                w["disposal_time"] = datetime.now().isoformat()
+                w["is_high_risk_unresolved"] = False
+
+    _monitor_store[record_id] = r
+    return get_record_detail(record_id)
+
+
+def report_abnormal(inp: AbnormalReportInput) -> WarningRecordOutput:
+    warning_id = _next_warning_id()
+    evt_label = ABNORMAL_EVENT_LABELS.get(inp.event_type, inp.event_type.value)
+    w = WarningRecordOutput(
+        warning_id=warning_id,
+        voyage_id=inp.voyage_id,
+        record_date=inp.record_date,
+        warning_level=inp.severity,
+        warning_type=inp.event_type.value,
+        warning_message=f"异常上报：{evt_label}" + (f" - {inp.description}" if inp.description else ""),
+        risk_score=0.5,
+        is_high_risk_unresolved=inp.severity in (WarningLevel.high, WarningLevel.critical),
+    )
+    _warning_store[warning_id] = w.model_dump()
+    return w
+
+
+def get_voyage_summary(voyage_id: str) -> Optional[VoyageSummaryOutput]:
+    records = [r for r in _monitor_store.values() if r["voyage_id"] == voyage_id]
+    if not records:
+        return None
+
+    sorted_recs = sorted(records, key=lambda r: r["record_date"])
+    total_days = len(sorted_recs)
+    avg_humidity = sum(r["cabin_humidity"] for r in sorted_recs) / total_days
+    avg_temperature = sum(r["cabin_temperature"] for r in sorted_recs) / total_days
+    max_risk = max(r["risk_score"] for r in sorted_recs)
+
+    all_warnings = [w for w in _warning_store.values() if w.get("voyage_id") == voyage_id]
+    warning_count = len(all_warnings)
+    high_risk_count = sum(1 for w in all_warnings if w["warning_level"] in (WarningLevel.high.value, WarningLevel.critical.value))
+    unresolved_count = sum(1 for w in all_warnings if w["disposal_status"] not in (DisposalStatus.completed.value, DisposalStatus.closed.value))
+    closed_count = sum(1 for w in all_warnings if w["disposal_status"] in (DisposalStatus.completed.value, DisposalStatus.closed.value))
+
+    trend = []
+    for r in sorted_recs:
+        trend.append(RiskTrendPoint(
+            record_date=r["record_date"],
+            risk_score=r["risk_score"],
+            humidity=r["cabin_humidity"],
+            temperature=r["cabin_temperature"],
+            warning_level=WarningLevel(r["warning_level"]),
+            pressure_risk=r.get("pressure_risk", 0),
+            moisture_risk=r.get("moisture_risk", 0),
+            shake_risk=r.get("shake_risk", 0),
+        ))
+
+    disposal_comparison = None
+    disposed_records = [r for r in sorted_recs if r["disposal_status"] in (DisposalStatus.completed.value, DisposalStatus.closed.value)]
+    if disposed_records:
+        before_recs = [r for r in sorted_recs if r["disposal_status"] in (DisposalStatus.pending.value, DisposalStatus.confirmed.value, DisposalStatus.processing.value)]
+        if before_recs:
+            before_avg_risk = sum(r["risk_score"] for r in before_recs) / len(before_recs)
+            after_avg_risk = sum(r["risk_score"] for r in disposed_records) / len(disposed_records)
+            disposal_comparison = {
+                "before_avg_risk": round(before_avg_risk, 4),
+                "after_avg_risk": round(after_avg_risk, 4),
+                "risk_reduction": round(before_avg_risk - after_avg_risk, 4),
+                "before_count": len(before_recs),
+                "after_count": len(disposed_records),
+            }
+
+    return VoyageSummaryOutput(
+        voyage_id=voyage_id,
+        total_days=total_days,
+        avg_humidity=round(avg_humidity, 2),
+        avg_temperature=round(avg_temperature, 2),
+        max_risk_score=round(max_risk, 4),
+        warning_count=warning_count,
+        high_risk_count=high_risk_count,
+        unresolved_count=unresolved_count,
+        closed_count=closed_count,
+        trend=trend,
+        pressure_risk_trend=trend,
+        moisture_risk_trend=trend,
+        disposal_comparison=disposal_comparison,
+    )
+
+
+def get_disposal_suggestion_api(warning_type: str, warning_level: str) -> dict:
+    try:
+        wl = WarningLevel(warning_level)
+    except ValueError:
+        wl = WarningLevel.medium
+    suggestion = _get_disposal_suggestion(wl, warning_type)
+    return {"warning_type": warning_type, "warning_level": warning_level, "suggestion": suggestion}

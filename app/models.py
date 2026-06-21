@@ -752,3 +752,353 @@ class PortCreateInput(BaseModel):
     unloading_rate: float
     storage_capacity: float
     note: str = ""
+
+
+class BatchStatus(str, Enum):
+    pending = "pending"
+    in_transit = "in_transit"
+    arrived = "arrived"
+    qualified = "qualified"
+    unqualified = "unqualified"
+
+
+class BatchQualityLevel(str, Enum):
+    excellent = "excellent"
+    good = "good"
+    medium = "medium"
+    poor = "poor"
+    critical = "critical"
+
+
+class AbnormalSeverity(str, Enum):
+    mild = "mild"
+    moderate = "moderate"
+    severe = "severe"
+    critical = "critical"
+
+
+class AbnormalStatus(str, Enum):
+    pending = "pending"
+    processing = "processing"
+    resolved = "resolved"
+    closed = "closed"
+
+
+class TransportIssueType(str, Enum):
+    pressure_loss = "pressure_loss"
+    damp = "damp"
+    moldy = "moldy"
+    damage = "damage"
+    other = "other"
+
+
+class ResponsibilityType(str, Enum):
+    loading = "loading"
+    transport = "transport"
+    storage = "storage"
+    weather = "weather"
+    packaging = "packaging"
+    unknown = "unknown"
+
+
+BATCH_STATUS_LABELS = {
+    BatchStatus.pending: "待装船",
+    BatchStatus.in_transit: "运输中",
+    BatchStatus.arrived: "已到港",
+    BatchStatus.qualified: "合格",
+    BatchStatus.unqualified: "不合格",
+}
+
+BATCH_QUALITY_LABELS = {
+    BatchQualityLevel.excellent: "优秀",
+    BatchQualityLevel.good: "良好",
+    BatchQualityLevel.medium: "中等",
+    BatchQualityLevel.poor: "较差",
+    BatchQualityLevel.critical: "严重",
+}
+
+ABNORMAL_SEVERITY_LABELS = {
+    AbnormalSeverity.mild: "轻微",
+    AbnormalSeverity.moderate: "中等",
+    AbnormalSeverity.severe: "严重",
+    AbnormalSeverity.critical: "极严重",
+}
+
+ABNORMAL_STATUS_LABELS = {
+    AbnormalStatus.pending: "待处理",
+    AbnormalStatus.processing: "处理中",
+    AbnormalStatus.resolved: "已解决",
+    AbnormalStatus.closed: "已闭环",
+}
+
+TRANSPORT_ISSUE_LABELS = {
+    TransportIssueType.pressure_loss: "压损",
+    TransportIssueType.damp: "受潮",
+    TransportIssueType.moldy: "发霉",
+    TransportIssueType.damage: "破损",
+    TransportIssueType.other: "其他",
+}
+
+RESPONSIBILITY_LABELS = {
+    ResponsibilityType.loading: "装货方",
+    ResponsibilityType.transport: "运输方",
+    ResponsibilityType.storage: "仓储方",
+    ResponsibilityType.weather: "不可抗力",
+    ResponsibilityType.packaging: "包装方",
+    ResponsibilityType.unknown: "待认定",
+}
+
+
+class BatchInspectionResult(BaseModel):
+    inspection_id: str
+    inspection_date: date
+    inspector: str = ""
+    moisture_rate: float = 0.0
+    impurity_rate: float = 0.0
+    damage_rate: float = 0.0
+    moldy_rate: float = 0.0
+    quality_score: float = 0.0
+    quality_level: BatchQualityLevel = BatchQualityLevel.good
+    note: str = ""
+
+
+class BatchAbnormalRecord(BaseModel):
+    abnormal_id: str
+    batch_id: str
+    record_date: date
+    issue_type: TransportIssueType
+    severity: AbnormalSeverity
+    description: str = ""
+    affected_weight: float = 0.0
+    location: str = ""
+    status: AbnormalStatus = AbnormalStatus.pending
+    responsible_party: ResponsibilityType = ResponsibilityType.unknown
+    disposal_action: str = ""
+    disposal_result: str = ""
+    disposal_date: Optional[date] = None
+    recorded_by: str = ""
+    created_at: str = ""
+
+
+class TransportQualityRecord(BaseModel):
+    record_id: str
+    batch_id: str
+    record_date: date
+    voyage_id: str = ""
+    stage: str = ""
+    moisture_rate: float = 0.0
+    temperature: float = 0.0
+    humidity: float = 0.0
+    pressure_loss_rate: float = 0.0
+    damp_rate: float = 0.0
+    moldy_rate: float = 0.0
+    damage_rate: float = 0.0
+    bag_status: BagCheckStatus = BagCheckStatus.normal
+    quality_score: float = 0.0
+    quality_level: BatchQualityLevel = BatchQualityLevel.good
+    operator: str = ""
+    note: str = ""
+    created_at: str = ""
+
+
+class GrainBatch(BaseModel):
+    batch_id: str
+    batch_code: str
+    grain_type: GrainType
+    origin: str = ""
+    origin_port: str = ""
+    destination_port: str = ""
+    warehouse_date: date
+    initial_moisture_rate: float = 0.0
+    initial_impurity_rate: float = 0.0
+    total_weight: float = 0.0
+    bag_count: int = 0
+    loading_date: Optional[date] = None
+    voyage_id: str = ""
+    ship_name: str = ""
+    arrival_date: Optional[date] = None
+    status: BatchStatus = BatchStatus.pending
+    is_qualified: bool = False
+    quality_score: float = 0.0
+    quality_level: BatchQualityLevel = BatchQualityLevel.good
+    inspection_results: List[BatchInspectionResult] = []
+    current_moisture_rate: float = 0.0
+    current_damage_rate: float = 0.0
+    current_moldy_rate: float = 0.0
+    total_loss_weight: float = 0.0
+    total_loss_rate: float = 0.0
+    abnormal_count: int = 0
+    severe_abnormal_count: int = 0
+    unresolved_severe_abnormal: bool = False
+    responsible_party: ResponsibilityType = ResponsibilityType.unknown
+    warehouse_manager: str = ""
+    loading_operator: str = ""
+    transport_captain: str = ""
+    note: str = ""
+    created_at: str = ""
+
+
+class BatchCreateInput(BaseModel):
+    batch_code: str
+    grain_type: GrainType
+    origin: str = ""
+    origin_port: str = ""
+    destination_port: str = ""
+    warehouse_date: date
+    initial_moisture_rate: float = 0.0
+    initial_impurity_rate: float = 0.0
+    total_weight: float = 0.0
+    bag_count: int = 0
+    voyage_id: str = ""
+    warehouse_manager: str = ""
+    note: str = ""
+
+    @field_validator("initial_moisture_rate", "initial_impurity_rate")
+    @classmethod
+    def rate_range(cls, v):
+        if v < 0 or v > 100:
+            raise ValueError("比率范围为0-100%")
+        return v
+
+    @field_validator("total_weight")
+    @classmethod
+    def weight_positive(cls, v):
+        if v < 0:
+            raise ValueError("重量不能为负数")
+        return v
+
+
+class BatchUpdateInput(BaseModel):
+    origin: Optional[str] = None
+    origin_port: Optional[str] = None
+    destination_port: Optional[str] = None
+    warehouse_date: Optional[date] = None
+    initial_moisture_rate: Optional[float] = None
+    initial_impurity_rate: Optional[float] = None
+    total_weight: Optional[float] = None
+    bag_count: Optional[int] = None
+    loading_date: Optional[date] = None
+    voyage_id: Optional[str] = None
+    ship_name: Optional[str] = None
+    arrival_date: Optional[date] = None
+    status: Optional[BatchStatus] = None
+    warehouse_manager: Optional[str] = None
+    loading_operator: Optional[str] = None
+    transport_captain: Optional[str] = None
+    note: Optional[str] = None
+
+
+class BatchInspectionInput(BaseModel):
+    batch_id: str
+    inspection_date: date
+    inspector: str = ""
+    moisture_rate: float = 0.0
+    impurity_rate: float = 0.0
+    damage_rate: float = 0.0
+    moldy_rate: float = 0.0
+    note: str = ""
+
+    @field_validator("moisture_rate", "impurity_rate", "damage_rate", "moldy_rate")
+    @classmethod
+    def rate_range(cls, v):
+        if v < 0 or v > 100:
+            raise ValueError("比率范围为0-100%")
+        return v
+
+
+class AbnormalRecordInput(BaseModel):
+    batch_id: str
+    record_date: date
+    issue_type: TransportIssueType
+    severity: AbnormalSeverity
+    description: str = ""
+    affected_weight: float = 0.0
+    location: str = ""
+    responsible_party: ResponsibilityType = ResponsibilityType.unknown
+    recorded_by: str = ""
+
+
+class AbnormalUpdateInput(BaseModel):
+    status: Optional[AbnormalStatus] = None
+    disposal_action: Optional[str] = None
+    disposal_result: Optional[str] = None
+    disposal_date: Optional[date] = None
+    severity: Optional[AbnormalSeverity] = None
+    responsible_party: Optional[ResponsibilityType] = None
+
+
+class TransportRecordInput(BaseModel):
+    batch_id: str
+    record_date: date
+    voyage_id: str = ""
+    stage: str = ""
+    moisture_rate: float = 0.0
+    temperature: float = 0.0
+    humidity: float = 0.0
+    pressure_loss_rate: float = 0.0
+    damp_rate: float = 0.0
+    moldy_rate: float = 0.0
+    damage_rate: float = 0.0
+    bag_status: BagCheckStatus = BagCheckStatus.normal
+    operator: str = ""
+    note: str = ""
+
+    @field_validator("moisture_rate", "humidity", "pressure_loss_rate", "damp_rate", "moldy_rate", "damage_rate")
+    @classmethod
+    def rate_range(cls, v):
+        if v < 0 or v > 100:
+            raise ValueError("比率范围为0-100%")
+        return v
+
+
+class QualityTrendPoint(BaseModel):
+    record_date: date
+    quality_score: float
+    quality_level: BatchQualityLevel
+    moisture_rate: float
+    damage_rate: float
+    moldy_rate: float
+    damp_rate: float
+
+
+class LossTraceItem(BaseModel):
+    stage: str
+    loss_weight: float
+    loss_rate: float
+    main_cause: str
+    abnormal_count: int
+    severe_count: int
+
+
+class BatchQualityReport(BaseModel):
+    batch_id: str
+    batch_code: str
+    grain_type: str
+    total_weight: float
+    quality_score: float
+    quality_level: str
+    initial_moisture_rate: float
+    current_moisture_rate: float
+    total_loss_weight: float
+    total_loss_rate: float
+    abnormal_count: int
+    severe_abnormal_count: int
+    unresolved_severe: bool
+    quality_trend: List[QualityTrendPoint]
+    loss_trace: List[LossTraceItem]
+    responsible_analysis: str
+    disposal_suggestion: str
+    is_qualified: bool
+    can_mark_qualified: bool
+
+
+class BatchSearchQuery(BaseModel):
+    batch_code: Optional[str] = None
+    grain_type: Optional[GrainType] = None
+    status: Optional[BatchStatus] = None
+    origin: Optional[str] = None
+    voyage_id: Optional[str] = None
+    has_abnormal: Optional[bool] = None
+    is_qualified: Optional[bool] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None

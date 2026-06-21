@@ -61,6 +61,32 @@ from app.models import (
     VoyageCreateInput,
     VoyageUpdateInput,
     WeatherCreateInput,
+    BatchStatus,
+    BatchQualityLevel,
+    AbnormalSeverity,
+    AbnormalStatus,
+    TransportIssueType,
+    ResponsibilityType,
+    BATCH_STATUS_LABELS,
+    BATCH_QUALITY_LABELS,
+    ABNORMAL_SEVERITY_LABELS,
+    ABNORMAL_STATUS_LABELS,
+    TRANSPORT_ISSUE_LABELS,
+    RESPONSIBILITY_LABELS,
+    BatchInspectionResult,
+    BatchAbnormalRecord,
+    TransportQualityRecord,
+    GrainBatch,
+    BatchCreateInput,
+    BatchUpdateInput,
+    BatchInspectionInput,
+    AbnormalRecordInput,
+    AbnormalUpdateInput,
+    TransportRecordInput,
+    QualityTrendPoint,
+    LossTraceItem,
+    BatchQualityReport,
+    BatchSearchQuery,
 )
 
 GRAIN_DENSITY_FACTOR = {
@@ -1836,3 +1862,592 @@ def generate_dispatch_plan(inp: SchedulePlanInput) -> DispatchResult:
         resource_shortages=resource_shortages,
         generation_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
+
+
+_batch_store: dict = {}
+_batch_abnormal_store: dict = {}
+_transport_record_store: dict = {}
+_batch_counter = 0
+_batch_abnormal_counter = 0
+_transport_record_counter = 0
+_batch_inspection_counter = 0
+
+
+def _next_batch_id():
+    global _batch_counter
+    _batch_counter += 1
+    return f"BATCH_{_batch_counter:05d}"
+
+
+def _next_abnormal_id():
+    global _batch_abnormal_counter
+    _batch_abnormal_counter += 1
+    return f"ABN_{_batch_abnormal_counter:05d}"
+
+
+def _next_transport_record_id():
+    global _transport_record_counter
+    _transport_record_counter += 1
+    return f"TQR_{_transport_record_counter:05d}"
+
+
+def _next_inspection_id():
+    global _batch_inspection_counter
+    _batch_inspection_counter += 1
+    return f"INS_{_batch_inspection_counter:05d}"
+
+
+def _calculate_quality_score(
+    moisture_rate: float, damage_rate: float, moldy_rate: float,
+    impurity_rate: float = 0.0
+) -> tuple:
+    score = 100.0
+    score -= moisture_rate * 1.5
+    score -= damage_rate * 2.0
+    score -= moldy_rate * 3.0
+    score -= impurity_rate * 1.0
+    score = max(0.0, min(100.0, score))
+
+    if score >= 90:
+        level = BatchQualityLevel.excellent
+    elif score >= 75:
+        level = BatchQualityLevel.good
+    elif score >= 60:
+        level = BatchQualityLevel.medium
+    elif score >= 40:
+        level = BatchQualityLevel.poor
+    else:
+        level = BatchQualityLevel.critical
+
+    return round(score, 2), level
+
+
+def _recalculate_batch_status(batch_id: str) -> None:
+    batch = _batch_store.get(batch_id)
+    if not batch:
+        return
+
+    abnormal_records = [
+        a for a in _batch_abnormal_store.values()
+        if a["batch_id"] == batch_id
+    ]
+
+    abnormal_count = len(abnormal_records)
+    severe_abnormal_count = sum(
+        1 for a in abnormal_records
+        if a["severity"] in (AbnormalSeverity.severe.value, AbnormalSeverity.critical.value)
+    )
+    unresolved_severe = any(
+        a["severity"] in (AbnormalSeverity.severe.value, AbnormalSeverity.critical.value)
+        and a["status"] not in (AbnormalStatus.resolved.value, AbnormalStatus.closed.value)
+        for a in abnormal_records
+    )
+
+    batch["abnormal_count"] = abnormal_count
+    batch["severe_abnormal_count"] = severe_abnormal_count
+    batch["unresolved_severe_abnormal"] = unresolved_severe
+
+    transport_records = [
+        r for r in _transport_record_store.values()
+        if r["batch_id"] == batch_id
+    ]
+    if transport_records:
+        latest = max(transport_records, key=lambda r: r["record_date"])
+        batch["current_moisture_rate"] = latest["moisture_rate"]
+        batch["current_damage_rate"] = latest["damage_rate"]
+        batch["current_moldy_rate"] = latest["moldy_rate"]
+        q_score, q_level = _calculate_quality_score(
+            latest["moisture_rate"],
+            latest["damage_rate"],
+            latest["moldy_rate"]
+        )
+        batch["quality_score"] = q_score
+        batch["quality_level"] = q_level.value
+
+    if batch["total_weight"] > 0:
+        batch["total_loss_rate"] = round(
+            batch["total_loss_weight"] / batch["total_weight"] * 100, 2
+        )
+
+    _batch_store[batch_id] = batch
+
+
+def _can_mark_qualified(batch_id: str) -> bool:
+    batch = _batch_store.get(batch_id)
+    if not batch:
+        return False
+
+    if batch.get("unresolved_severe_abnormal", False):
+        return False
+
+    abnormal_records = [
+        a for a in _batch_abnormal_store.values()
+        if a["batch_id"] == batch_id
+    ]
+    for a in abnormal_records:
+        if a["severity"] in (AbnormalSeverity.severe.value, AbnormalSeverity.critical.value):
+            if a["status"] not in (AbnormalStatus.resolved.value, AbnormalStatus.closed.value):
+                return False
+
+    return True
+
+
+def create_grain_batch(inp: BatchCreateInput) -> GrainBatch:
+    bid = _next_batch_id()
+    quality_score, quality_level = _calculate_quality_score(
+        inp.initial_moisture_rate, 0.0, 0.0, inp.initial_impurity_rate
+    )
+
+    batch = GrainBatch(
+        batch_id=bid,
+        batch_code=inp.batch_code,
+        grain_type=inp.grain_type,
+        origin=inp.origin,
+        origin_port=inp.origin_port,
+        destination_port=inp.destination_port,
+        warehouse_date=inp.warehouse_date,
+        initial_moisture_rate=inp.initial_moisture_rate,
+        initial_impurity_rate=inp.initial_impurity_rate,
+        total_weight=inp.total_weight,
+        bag_count=inp.bag_count,
+        voyage_id=inp.voyage_id,
+        current_moisture_rate=inp.initial_moisture_rate,
+        quality_score=quality_score,
+        quality_level=quality_level,
+        warehouse_manager=inp.warehouse_manager,
+        note=inp.note,
+        created_at=datetime.now().isoformat(),
+    )
+
+    _batch_store[bid] = batch.model_dump()
+    return batch
+
+
+def get_grain_batch(batch_id: str) -> Optional[GrainBatch]:
+    b = _batch_store.get(batch_id)
+    return GrainBatch(**b) if b else None
+
+
+def get_all_grain_batches() -> list:
+    return [GrainBatch(**b) for b in _batch_store.values()]
+
+
+def update_grain_batch(batch_id: str, inp: BatchUpdateInput) -> Optional[GrainBatch]:
+    if batch_id not in _batch_store:
+        return None
+
+    update_data = {k: v for k, v in inp.model_dump().items() if v is not None}
+    _batch_store[batch_id].update(update_data)
+
+    if "status" in update_data:
+        new_status = update_data["status"]
+        if new_status == BatchStatus.qualified.value:
+            if not _can_mark_qualified(batch_id):
+                raise ValueError("存在严重异常且未处理完成，不得标记为合格批次")
+            _batch_store[batch_id]["is_qualified"] = True
+        else:
+            _batch_store[batch_id]["is_qualified"] = False
+
+    _recalculate_batch_status(batch_id)
+    return GrainBatch(**_batch_store[batch_id])
+
+
+def delete_grain_batch(batch_id: str) -> bool:
+    if batch_id not in _batch_store:
+        return False
+
+    del _batch_store[batch_id]
+
+    for aid in list(_batch_abnormal_store.keys()):
+        if _batch_abnormal_store[aid]["batch_id"] == batch_id:
+            del _batch_abnormal_store[aid]
+
+    for rid in list(_transport_record_store.keys()):
+        if _transport_record_store[rid]["batch_id"] == batch_id:
+            del _transport_record_store[rid]
+
+    return True
+
+
+def search_grain_batches(query: BatchSearchQuery) -> list:
+    batches = list(_batch_store.values())
+
+    if query.batch_code:
+        batches = [b for b in batches if query.batch_code.lower() in b["batch_code"].lower()]
+
+    if query.grain_type:
+        batches = [b for b in batches if b["grain_type"] == query.grain_type.value]
+
+    if query.status:
+        batches = [b for b in batches if b["status"] == query.status.value]
+
+    if query.origin:
+        batches = [b for b in batches if query.origin.lower() in b["origin"].lower()]
+
+    if query.voyage_id:
+        batches = [b for b in batches if query.voyage_id in b["voyage_id"]]
+
+    if query.has_abnormal is not None:
+        if query.has_abnormal:
+            batches = [b for b in batches if b["abnormal_count"] > 0]
+        else:
+            batches = [b for b in batches if b["abnormal_count"] == 0]
+
+    if query.is_qualified is not None:
+        batches = [b for b in batches if b["is_qualified"] == query.is_qualified]
+
+    if query.start_date:
+        batches = [b for b in batches if b["warehouse_date"] >= query.start_date]
+
+    if query.end_date:
+        batches = [b for b in batches if b["warehouse_date"] <= query.end_date]
+
+    return [GrainBatch(**b) for b in batches]
+
+
+def add_batch_inspection(inp: BatchInspectionInput) -> BatchInspectionResult:
+    if inp.batch_id not in _batch_store:
+        raise ValueError("批次不存在")
+
+    iid = _next_inspection_id()
+    quality_score, quality_level = _calculate_quality_score(
+        inp.moisture_rate, inp.damage_rate, inp.moldy_rate, inp.impurity_rate
+    )
+
+    result = BatchInspectionResult(
+        inspection_id=iid,
+        inspection_date=inp.inspection_date,
+        inspector=inp.inspector,
+        moisture_rate=inp.moisture_rate,
+        impurity_rate=inp.impurity_rate,
+        damage_rate=inp.damage_rate,
+        moldy_rate=inp.moldy_rate,
+        quality_score=quality_score,
+        quality_level=quality_level,
+        note=inp.note,
+    )
+
+    batch = _batch_store[inp.batch_id]
+    if "inspection_results" not in batch:
+        batch["inspection_results"] = []
+    batch["inspection_results"].append(result.model_dump())
+
+    batch["current_moisture_rate"] = inp.moisture_rate
+    batch["current_damage_rate"] = inp.damage_rate
+    batch["current_moldy_rate"] = inp.moldy_rate
+    batch["quality_score"] = quality_score
+    batch["quality_level"] = quality_level.value
+
+    _batch_store[inp.batch_id] = batch
+    _recalculate_batch_status(inp.batch_id)
+
+    return result
+
+
+def get_batch_inspections(batch_id: str) -> list:
+    batch = _batch_store.get(batch_id)
+    if not batch:
+        return []
+    return [BatchInspectionResult(**r) for r in batch.get("inspection_results", [])]
+
+
+def create_abnormal_record(inp: AbnormalRecordInput) -> BatchAbnormalRecord:
+    if inp.batch_id not in _batch_store:
+        raise ValueError("批次不存在")
+
+    aid = _next_abnormal_id()
+    record = BatchAbnormalRecord(
+        abnormal_id=aid,
+        batch_id=inp.batch_id,
+        record_date=inp.record_date,
+        issue_type=inp.issue_type,
+        severity=inp.severity,
+        description=inp.description,
+        affected_weight=inp.affected_weight,
+        location=inp.location,
+        responsible_party=inp.responsible_party,
+        recorded_by=inp.recorded_by,
+        created_at=datetime.now().isoformat(),
+    )
+
+    _batch_abnormal_store[aid] = record.model_dump()
+
+    batch = _batch_store[inp.batch_id]
+    if inp.affected_weight > 0:
+        batch["total_loss_weight"] = round(
+            batch.get("total_loss_weight", 0.0) + inp.affected_weight, 2
+        )
+
+    _recalculate_batch_status(inp.batch_id)
+
+    return record
+
+
+def get_abnormal_records(batch_id: Optional[str] = None) -> list:
+    records = list(_batch_abnormal_store.values())
+    if batch_id:
+        records = [r for r in records if r["batch_id"] == batch_id]
+    records.sort(key=lambda r: r["record_date"], reverse=True)
+    return [BatchAbnormalRecord(**r) for r in records]
+
+
+def update_abnormal_record(abnormal_id: str, inp: AbnormalUpdateInput) -> Optional[BatchAbnormalRecord]:
+    if abnormal_id not in _batch_abnormal_store:
+        return None
+
+    update_data = {k: v for k, v in inp.model_dump().items() if v is not None}
+    _batch_abnormal_store[abnormal_id].update(update_data)
+
+    batch_id = _batch_abnormal_store[abnormal_id]["batch_id"]
+    _recalculate_batch_status(batch_id)
+
+    return BatchAbnormalRecord(**_batch_abnormal_store[abnormal_id])
+
+
+def create_transport_record(inp: TransportRecordInput) -> TransportQualityRecord:
+    if inp.batch_id not in _batch_store:
+        raise ValueError("批次不存在")
+
+    rid = _next_transport_record_id()
+    quality_score, quality_level = _calculate_quality_score(
+        inp.moisture_rate, inp.damage_rate, inp.moldy_rate
+    )
+
+    record = TransportQualityRecord(
+        record_id=rid,
+        batch_id=inp.batch_id,
+        record_date=inp.record_date,
+        voyage_id=inp.voyage_id,
+        stage=inp.stage,
+        moisture_rate=inp.moisture_rate,
+        temperature=inp.temperature,
+        humidity=inp.humidity,
+        pressure_loss_rate=inp.pressure_loss_rate,
+        damp_rate=inp.damp_rate,
+        moldy_rate=inp.moldy_rate,
+        damage_rate=inp.damage_rate,
+        bag_status=inp.bag_status,
+        quality_score=quality_score,
+        quality_level=quality_level,
+        operator=inp.operator,
+        note=inp.note,
+        created_at=datetime.now().isoformat(),
+    )
+
+    _transport_record_store[rid] = record.model_dump()
+    _recalculate_batch_status(inp.batch_id)
+
+    return record
+
+
+def get_transport_records(batch_id: str) -> list:
+    records = [
+        r for r in _transport_record_store.values()
+        if r["batch_id"] == batch_id
+    ]
+    records.sort(key=lambda r: r["record_date"])
+    return [TransportQualityRecord(**r) for r in records]
+
+
+def generate_quality_report(batch_id: str) -> Optional[BatchQualityReport]:
+    batch = _batch_store.get(batch_id)
+    if not batch:
+        return None
+
+    transport_records = [
+        r for r in _transport_record_store.values()
+        if r["batch_id"] == batch_id
+    ]
+    transport_records.sort(key=lambda r: r["record_date"])
+
+    quality_trend = []
+    for r in transport_records:
+        quality_trend.append(QualityTrendPoint(
+            record_date=r["record_date"],
+            quality_score=r["quality_score"],
+            quality_level=BatchQualityLevel(r["quality_level"]),
+            moisture_rate=r["moisture_rate"],
+            damage_rate=r["damage_rate"],
+            moldy_rate=r["moldy_rate"],
+            damp_rate=r["damp_rate"],
+        ))
+
+    if not quality_trend:
+        quality_score, quality_level = _calculate_quality_score(
+            batch["initial_moisture_rate"], 0.0, 0.0
+        )
+        quality_trend.append(QualityTrendPoint(
+            record_date=batch["warehouse_date"],
+            quality_score=quality_score,
+            quality_level=quality_level,
+            moisture_rate=batch["initial_moisture_rate"],
+            damage_rate=0.0,
+            moldy_rate=0.0,
+            damp_rate=0.0,
+        ))
+
+    loss_trace = _generate_loss_trace(batch_id)
+
+    abnormal_records = [
+        a for a in _batch_abnormal_store.values()
+        if a["batch_id"] == batch_id
+    ]
+
+    responsible_analysis = _analyze_responsibility(abnormal_records, batch)
+    disposal_suggestion = _generate_disposal_suggestion(batch, abnormal_records)
+
+    can_mark = _can_mark_qualified(batch_id)
+
+    return BatchQualityReport(
+        batch_id=batch["batch_id"],
+        batch_code=batch["batch_code"],
+        grain_type=GRAIN_NAME_CN.get(GrainType(batch["grain_type"]), batch["grain_type"]),
+        total_weight=batch["total_weight"],
+        quality_score=batch["quality_score"],
+        quality_level=BATCH_QUALITY_LABELS.get(BatchQualityLevel(batch["quality_level"]), batch["quality_level"]),
+        initial_moisture_rate=batch["initial_moisture_rate"],
+        current_moisture_rate=batch["current_moisture_rate"],
+        total_loss_weight=batch.get("total_loss_weight", 0.0),
+        total_loss_rate=batch.get("total_loss_rate", 0.0),
+        abnormal_count=batch["abnormal_count"],
+        severe_abnormal_count=batch["severe_abnormal_count"],
+        unresolved_severe=batch["unresolved_severe_abnormal"],
+        quality_trend=quality_trend,
+        loss_trace=loss_trace,
+        responsible_analysis=responsible_analysis,
+        disposal_suggestion=disposal_suggestion,
+        is_qualified=batch["is_qualified"],
+        can_mark_qualified=can_mark,
+    )
+
+
+def _generate_loss_trace(batch_id: str) -> list:
+    transport_records = [
+        r for r in _transport_record_store.values()
+        if r["batch_id"] == batch_id
+    ]
+    transport_records.sort(key=lambda r: r["record_date"])
+
+    batch = _batch_store[batch_id]
+    total_weight = batch["total_weight"] or 1.0
+
+    loss_trace = []
+    stages = []
+
+    if transport_records:
+        initial_loss = transport_records[0]["damage_rate"] + transport_records[0]["moldy_rate"]
+        stages.append({
+            "stage": "入仓验收",
+            "loss_weight": round(total_weight * batch["initial_impurity_rate"] / 100, 2),
+            "loss_rate": batch["initial_impurity_rate"],
+            "main_cause": "原始杂质",
+            "abnormal_count": 0,
+            "severe_count": 0,
+        })
+
+        stage_groups = {}
+        for r in transport_records:
+            stage = r["stage"] or "运输途中"
+            if stage not in stage_groups:
+                stage_groups[stage] = {
+                    "stage": stage,
+                    "records": [],
+                }
+            stage_groups[stage]["records"].append(r)
+
+        for stage_name, group in stage_groups.items():
+            records = group["records"]
+            max_damage = max(r["damage_rate"] for r in records)
+            max_moldy = max(r["moldy_rate"] for r in records)
+            max_damp = max(r["damp_rate"] for r in records)
+            total_loss_pct = max_damage + max_moldy + max_damp * 0.5
+
+            abnormal_count = sum(
+                1 for a in _batch_abnormal_store.values()
+                if a["batch_id"] == batch_id and a.get("location", "") == stage_name
+            )
+            severe_count = sum(
+                1 for a in _batch_abnormal_store.values()
+                if a["batch_id"] == batch_id
+                and a.get("location", "") == stage_name
+                and a["severity"] in (AbnormalSeverity.severe.value, AbnormalSeverity.critical.value)
+            )
+
+            main_cause = "正常损耗"
+            if max_moldy > max_damage and max_moldy > max_damp:
+                main_cause = "发霉变质"
+            elif max_damage > max_damp:
+                main_cause = "压损破损"
+            elif max_damp > 0:
+                main_cause = "受潮影响"
+
+            stages.append({
+                "stage": stage_name,
+                "loss_weight": round(total_weight * total_loss_pct / 100, 2),
+                "loss_rate": round(total_loss_pct, 2),
+                "main_cause": main_cause,
+                "abnormal_count": abnormal_count,
+                "severe_count": severe_count,
+            })
+    else:
+        stages.append({
+            "stage": "仓储阶段",
+            "loss_weight": 0.0,
+            "loss_rate": 0.0,
+            "main_cause": "暂无数据",
+            "abnormal_count": 0,
+            "severe_count": 0,
+        })
+
+    return [LossTraceItem(**s) for s in stages]
+
+
+def _analyze_responsibility(abnormal_records: list, batch: dict) -> str:
+    if not abnormal_records:
+        return "批次无异常记录，责任认定：各环节正常"
+
+    resp_counts = {}
+    for a in abnormal_records:
+        resp = a["responsible_party"]
+        resp_counts[resp] = resp_counts.get(resp, 0) + 1
+
+    if not resp_counts:
+        return "责任待认定"
+
+    main_resp = max(resp_counts.keys(), key=lambda k: resp_counts[k])
+    main_resp_label = RESPONSIBILITY_LABELS.get(ResponsibilityType(main_resp), main_resp)
+
+    details = []
+    for resp, count in resp_counts.items():
+        label = RESPONSIBILITY_LABELS.get(ResponsibilityType(resp), resp)
+        details.append(f"{label}：{count}起")
+
+    return f"主要责任方：{main_resp_label}。各环节异常分布：{'; '.join(details)}"
+
+
+def _generate_disposal_suggestion(batch: dict, abnormal_records: list) -> str:
+    suggestions = []
+
+    if batch.get("unresolved_severe_abnormal"):
+        suggestions.append("⚠ 存在严重未处理异常，必须先完成所有严重异常的处置闭环后，方可进行最终验收")
+
+    quality_level = batch.get("quality_level", "good")
+    if quality_level in (BatchQualityLevel.poor.value, BatchQualityLevel.critical.value):
+        suggestions.append("批次质量较差，建议进行复检和专项处理，必要时降级使用")
+
+    moldy_rate = batch.get("current_moldy_rate", 0)
+    if moldy_rate > 2:
+        suggestions.append("发霉率较高，需进行熏蒸消杀处理，防止霉变扩散")
+
+    damage_rate = batch.get("current_damage_rate", 0)
+    if damage_rate > 3:
+        suggestions.append("破损率较高，需进行筛选整理，重新包装")
+
+    moisture_rate = batch.get("current_moisture_rate", 0)
+    if moisture_rate > 14:
+        suggestions.append("含水率偏高，需进行干燥处理")
+
+    if not suggestions:
+        suggestions.append("批次质量良好，按正常流程验收即可")
+
+    return "；".join(suggestions)

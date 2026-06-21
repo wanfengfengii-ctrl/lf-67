@@ -26,6 +26,18 @@ from app.models import (
     WeatherCreateInput,
     SchedulePlanInput,
     DispatchResult,
+    GrainBatch,
+    BatchCreateInput,
+    BatchUpdateInput,
+    BatchInspectionInput,
+    BatchInspectionResult,
+    BatchAbnormalRecord,
+    AbnormalRecordInput,
+    AbnormalUpdateInput,
+    TransportQualityRecord,
+    TransportRecordInput,
+    BatchQualityReport,
+    BatchSearchQuery,
 )
 from app.engine import (
     simulate,
@@ -56,6 +68,20 @@ from app.engine import (
     get_weather_forecasts,
     create_weather_forecast,
     generate_dispatch_plan,
+    create_grain_batch,
+    get_grain_batch,
+    get_all_grain_batches,
+    update_grain_batch,
+    delete_grain_batch,
+    search_grain_batches,
+    add_batch_inspection,
+    get_batch_inspections,
+    create_abnormal_record,
+    get_abnormal_records,
+    update_abnormal_record,
+    create_transport_record,
+    get_transport_records,
+    generate_quality_report,
 )
 
 router = APIRouter()
@@ -292,5 +318,118 @@ def api_create_weather_forecast(inp: WeatherCreateInput):
 def api_generate_dispatch_plan(inp: SchedulePlanInput):
     try:
         return generate_dispatch_plan(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/trace/batches", response_model=list[GrainBatch])
+def api_get_all_batches():
+    return get_all_grain_batches()
+
+
+@router.get("/trace/batches/{batch_id}", response_model=GrainBatch)
+def api_get_batch(batch_id: str):
+    result = get_grain_batch(batch_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return result
+
+
+@router.post("/trace/batches", response_model=GrainBatch)
+def api_create_batch(inp: BatchCreateInput):
+    try:
+        return create_grain_batch(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch("/trace/batches/{batch_id}", response_model=GrainBatch)
+def api_update_batch(batch_id: str, inp: BatchUpdateInput):
+    try:
+        result = update_grain_batch(batch_id, inp)
+        if not result:
+            raise HTTPException(status_code=404, detail="批次不存在")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.delete("/trace/batches/{batch_id}")
+def api_delete_batch(batch_id: str):
+    if not delete_grain_batch(batch_id):
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return {"status": "success", "message": "批次已删除"}
+
+
+@router.post("/trace/batches/search", response_model=list[GrainBatch])
+def api_search_batches(query: BatchSearchQuery):
+    return search_grain_batches(query)
+
+
+@router.get("/trace/batches/{batch_id}/inspections", response_model=list[BatchInspectionResult])
+def api_get_batch_inspections(batch_id: str):
+    return get_batch_inspections(batch_id)
+
+
+@router.post("/trace/inspections", response_model=BatchInspectionResult)
+def api_add_batch_inspection(inp: BatchInspectionInput):
+    try:
+        return add_batch_inspection(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/trace/abnormal", response_model=list[BatchAbnormalRecord])
+def api_get_abnormal_records(batch_id: Optional[str] = Query(None)):
+    return get_abnormal_records(batch_id)
+
+
+@router.post("/trace/abnormal", response_model=BatchAbnormalRecord)
+def api_create_abnormal_record(inp: AbnormalRecordInput):
+    try:
+        return create_abnormal_record(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch("/trace/abnormal/{abnormal_id}", response_model=BatchAbnormalRecord)
+def api_update_abnormal_record(abnormal_id: str, inp: AbnormalUpdateInput):
+    result = update_abnormal_record(abnormal_id, inp)
+    if not result:
+        raise HTTPException(status_code=404, detail="异常记录不存在")
+    return result
+
+
+@router.get("/trace/batches/{batch_id}/transport-records", response_model=list[TransportQualityRecord])
+def api_get_transport_records(batch_id: str):
+    return get_transport_records(batch_id)
+
+
+@router.post("/trace/transport-records", response_model=TransportQualityRecord)
+def api_create_transport_record(inp: TransportRecordInput):
+    try:
+        return create_transport_record(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/trace/batches/{batch_id}/quality-report", response_model=BatchQualityReport)
+def api_get_quality_report(batch_id: str):
+    result = generate_quality_report(batch_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    return result
+
+
+@router.post("/trace/batches/{batch_id}/mark-qualified", response_model=GrainBatch)
+def api_mark_batch_qualified(batch_id: str):
+    try:
+        result = update_grain_batch(
+            batch_id,
+            BatchUpdateInput(status="qualified")
+        )
+        if not result:
+            raise HTTPException(status_code=404, detail="批次不存在")
+        return result
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

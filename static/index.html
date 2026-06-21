@@ -99,8 +99,8 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>环境湿度 (%) <span style="color:var(--warn);font-size:11px;">必填</span></label>
-                    <input type="number" id="humidity" placeholder="0-100" min="0" max="100" step="1" value="65">
+                    <label>环境湿度 (%) <span style="color:var(--text2);font-size:11px;">— 留空为非正式评估</span></label>
+                    <input type="number" id="humidity" placeholder="留空为非正式评估" min="0" max="100" step="1" value="65">
                 </div>
             </div>
 
@@ -146,11 +146,11 @@
             <hr class="divider">
             <button class="btn-primary" id="btn_simulate" onclick="runSimulation()">▶ 当前方案模拟</button>
             <div style="height:10px;"></div>
-            <button class="btn-secondary" onclick="runMultiSchemes()">🎯 智能生成多方案</button>
+            <button class="btn-secondary" id="btn_multi" onclick="runMultiSchemes()">🎯 智能生成多方案</button>
             <div style="height:10px;"></div>
-            <button class="btn-secondary" onclick="runComparison()">⚖ 对比装载方式</button>
+            <button class="btn-secondary" id="btn_compare" onclick="runComparison()">⚖ 对比装载方式</button>
             <div style="height:10px;"></div>
-            <button class="btn-tertiary" onclick="runBatchCompare()">📊 湿度×海况矩阵对比</button>
+            <button class="btn-tertiary" id="btn_batch" onclick="runBatchCompare()">📊 湿度×海况矩阵对比</button>
         </aside>
 
         <main class="content" id="main_content">

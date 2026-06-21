@@ -3,6 +3,8 @@ let lastResult = null;
 let lastReq = null;
 let lastMultiResult = null;
 let selectedSchemeId = null;
+let currentView = 'empty';
+let isComputing = false;
 
 function getFormData() {
     const v = id => document.getElementById(id).value;
@@ -94,59 +96,89 @@ async function apiCall(endpoint, body) {
     return res.json();
 }
 
-function setButtonLoading(loading, text) {
-    const btn = document.getElementById('btn_simulate');
-    btn.disabled = loading;
-    btn.textContent = loading ? text : '▶ 当前方案模拟';
+const BUTTON_TEXTS = {
+    btn_simulate: '▶ 当前方案模拟',
+    btn_multi: '🎯 智能生成多方案',
+    btn_compare: '⚖ 对比装载方式',
+    btn_batch: '📊 湿度×海况矩阵对比'
+};
+
+function setAllButtonsDisabled(disabled) {
+    isComputing = disabled;
+    ['btn_simulate', 'btn_multi', 'btn_compare', 'btn_batch'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = disabled;
+    });
+}
+
+function setActiveButtonLoading(activeId, loadingText) {
+    setAllButtonsDisabled(true);
+    const btn = document.getElementById(activeId);
+    if (btn) btn.textContent = loadingText;
+}
+
+function resetAllButtons() {
+    setAllButtonsDisabled(false);
+    Object.entries(BUTTON_TEXTS).forEach(([id, text]) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.textContent = text;
+    });
 }
 
 async function runSimulation() {
-    setButtonLoading(true, '计算中...');
+    if (isComputing) return;
+    setActiveButtonLoading('btn_simulate', '计算中...');
     try {
         const req = getFormData();
         const result = await apiCall('/simulate', req);
         lastResult = result;
         lastReq = req;
+        currentView = 'single';
         renderResult(req, result);
     } catch (e) {
         alert('模拟失败: ' + e.message);
     } finally {
-        setButtonLoading(false);
+        resetAllButtons();
     }
 }
 
 async function runComparison() {
-    setButtonLoading(true, '对比中...');
+    if (isComputing) return;
+    setActiveButtonLoading('btn_compare', '对比中...');
     try {
         const req = getFormData();
         const result = await apiCall('/compare', req);
         lastReq = req;
+        currentView = 'compare';
         renderComparison(req, result);
     } catch (e) {
         alert('对比失败: ' + e.message);
     } finally {
-        setButtonLoading(false);
+        resetAllButtons();
     }
 }
 
 async function runMultiSchemes() {
-    setButtonLoading(true, '生成方案中...');
+    if (isComputing) return;
+    setActiveButtonLoading('btn_multi', '生成方案中...');
     try {
         const req = getFormData();
         const result = await apiCall('/multi-schemes', req);
         lastMultiResult = result;
         lastReq = req;
         selectedSchemeId = result.best_scheme_id;
+        currentView = 'multi';
         renderMultiSchemes(req, result);
     } catch (e) {
         alert('生成方案失败: ' + e.message);
     } finally {
-        setButtonLoading(false);
+        resetAllButtons();
     }
 }
 
 async function runBatchCompare() {
-    setButtonLoading(true, '批量计算中...');
+    if (isComputing) return;
+    setActiveButtonLoading('btn_batch', '批量计算中...');
     try {
         const req = getBatchFormData();
         if (req.humidity_values.length === 0) {
@@ -159,11 +191,12 @@ async function runBatchCompare() {
         }
         const result = await apiCall('/batch-compare', req);
         lastReq = req;
+        currentView = 'batch';
         renderBatchCompare(req, result);
     } catch (e) {
         alert('批量对比失败: ' + e.message);
     } finally {
-        setButtonLoading(false);
+        resetAllButtons();
     }
 }
 
@@ -623,6 +656,7 @@ function viewBatchCell(row, col) {
     };
     lastResult = r;
     lastReq = simReq;
+    currentView = 'single';
     renderResult(simReq, r);
 }
 
@@ -858,6 +892,8 @@ let lastAutoReq = null;
 function scheduleAutoSimulate() {
     if (autoSimulateTimer) clearTimeout(autoSimulateTimer);
     autoSimulateTimer = setTimeout(() => {
+        if (isComputing) return;
+        if (currentView !== 'single') return;
         try {
             const req = getFormData();
             const reqStr = JSON.stringify(req);
@@ -866,7 +902,9 @@ function scheduleAutoSimulate() {
                 apiCall('/simulate', req).then(result => {
                     lastResult = result;
                     lastReq = req;
-                    renderResult(req, result);
+                    if (currentView === 'single') {
+                        renderResult(req, result);
+                    }
                 }).catch(() => {});
             }
         } catch (e) {}

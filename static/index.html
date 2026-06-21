@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>漕船粮包堆码模拟系统</title>
+    <title>漕船粮包堆码模拟系统 v2.0</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <header class="header">
         <div class="header-icon">🚢</div>
         <div>
-            <h1>漕船粮包堆码模拟系统</h1>
-            <p>模拟舱内粮包堆码方式，评估压损、受潮与损耗风险</p>
+            <h1>漕船粮包堆码模拟系统 <span class="version-badge">v2.0</span></h1>
+            <p>多方案智能生成 · 风险评估与处置 · 湿度海况批量对比</p>
         </div>
     </header>
 
@@ -55,7 +55,7 @@
             </div>
 
             <hr class="divider">
-            <div class="section-title">装载配置</div>
+            <div class="section-title">核心装载配置</div>
             <div class="form-row-2">
                 <div class="form-group">
                     <label>堆码层数</label>
@@ -78,7 +78,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>装载方式</label>
+                    <label>基础装载方式</label>
                     <select id="loading_order">
                         <option value="even">均匀分布</option>
                         <option value="bottom_heavy">底层加重</option>
@@ -87,31 +87,81 @@
                     </select>
                 </div>
             </div>
-            <div class="form-group">
-                <label>海况/船体摇晃</label>
-                <select id="sea_state">
-                    <option value="calm">平静</option>
-                    <option value="slight">轻微摇晃</option>
-                    <option value="moderate">中等摇晃</option>
-                    <option value="rough">剧烈摇晃</option>
-                    <option value="very_rough">极端摇晃</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>环境湿度 (%) <span style="color:var(--warn);font-size:11px;">— 留空则不生成正式损耗评估</span></label>
-                <input type="number" id="humidity" placeholder="0-100" min="0" max="100" step="1">
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>海况/船体摇晃</label>
+                    <select id="sea_state">
+                        <option value="calm">平静</option>
+                        <option value="slight">轻微摇晃</option>
+                        <option value="moderate">中等摇晃</option>
+                        <option value="rough">剧烈摇晃</option>
+                        <option value="very_rough">极端摇晃</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>环境湿度 (%) <span style="color:var(--warn);font-size:11px;">必填</span></label>
+                    <input type="number" id="humidity" placeholder="0-100" min="0" max="100" step="1" value="65">
+                </div>
             </div>
 
             <hr class="divider">
-            <button class="btn-primary" id="btn_simulate" onclick="runSimulation()">▶ 运行模拟</button>
+            <div class="section-title">⚙ 高级约束配置</div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>最大允许损耗率 (%)</label>
+                    <input type="number" id="max_loss_rate" value="10" min="0.1" max="100" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label>最大层数上限 <span style="color:var(--text2);font-size:11px;">— 留空自动</span></label>
+                    <input type="number" id="max_layers" placeholder="自动计算" min="1" max="20" step="1">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>装载优先目标</label>
+                <select id="priority_target">
+                    <option value="balance">综合平衡（推荐）</option>
+                    <option value="min_loss">最小损耗优先</option>
+                    <option value="max_capacity">最大容量优先</option>
+                    <option value="min_pressure">最低承压优先</option>
+                </select>
+            </div>
+
+            <hr class="divider">
+            <div class="section-title">📊 批量对比配置</div>
+            <div class="form-group">
+                <label>湿度取值列表（用逗号分隔）</label>
+                <input type="text" id="batch_humidities" value="40, 55, 70, 85" placeholder="例: 40, 60, 80">
+            </div>
+            <div class="form-group">
+                <label>海况取值列表（勾选）</label>
+                <div class="checkbox-group" id="batch_sea_states">
+                    <label><input type="checkbox" value="calm" checked> 平静</label>
+                    <label><input type="checkbox" value="slight" checked> 轻微</label>
+                    <label><input type="checkbox" value="moderate" checked> 中等</label>
+                    <label><input type="checkbox" value="rough"> 剧烈</label>
+                    <label><input type="checkbox" value="very_rough"> 极端</label>
+                </div>
+            </div>
+
+            <hr class="divider">
+            <button class="btn-primary" id="btn_simulate" onclick="runSimulation()">▶ 当前方案模拟</button>
             <div style="height:10px;"></div>
-            <button class="btn-secondary" onclick="runComparison()">⚖ 对比所有装载方案</button>
+            <button class="btn-secondary" onclick="runMultiSchemes()">🎯 智能生成多方案</button>
+            <div style="height:10px;"></div>
+            <button class="btn-secondary" onclick="runComparison()">⚖ 对比装载方式</button>
+            <div style="height:10px;"></div>
+            <button class="btn-tertiary" onclick="runBatchCompare()">📊 湿度×海况矩阵对比</button>
         </aside>
 
         <main class="content" id="main_content">
             <div class="empty-state">
                 <div class="icon">🚢</div>
-                <p>配置左侧参数后点击"运行模拟"开始</p>
+                <p>配置左侧参数后选择操作模式开始</p>
+                <div class="empty-hints">
+                    <div class="hint-card"><span class="hint-icon">▶</span><div><b>当前方案模拟</b><p>针对输入参数的单次详细评估</p></div></div>
+                    <div class="hint-card"><span class="hint-icon">🎯</span><div><b>智能生成多方案</b><p>自动组合层数×装载方式，按优先级推荐</p></div></div>
+                    <div class="hint-card"><span class="hint-icon">📊</span><div><b>湿度×海况矩阵</b><p>批量对比不同环境条件下的风险</p></div></div>
+                </div>
             </div>
         </main>
     </div>

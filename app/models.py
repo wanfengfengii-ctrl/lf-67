@@ -1,5 +1,5 @@
 from pydantic import BaseModel, field_validator, model_validator
-from typing import Optional
+from typing import Optional, List
 from enum import Enum
 
 
@@ -24,6 +24,20 @@ class SeaState(str, Enum):
     moderate = "moderate"
     rough = "rough"
     very_rough = "very_rough"
+
+
+class PriorityTarget(str, Enum):
+    min_loss = "min_loss"
+    max_capacity = "max_capacity"
+    min_pressure = "min_pressure"
+    balance = "balance"
+
+
+class RecommendationStatus(str, Enum):
+    recommended = "recommended"
+    alternative = "alternative"
+    high_risk = "high_risk"
+    informal = "informal"
 
 
 class CabinConfig(BaseModel):
@@ -62,6 +76,9 @@ class SimulationRequest(BaseModel):
     voyage_days: int
     loading_order: LoadingOrder = LoadingOrder.even
     sea_state: SeaState = SeaState.calm
+    max_loss_rate: Optional[float] = 10.0
+    max_layers: Optional[int] = None
+    priority_target: PriorityTarget = PriorityTarget.balance
 
     @field_validator("layers")
     @classmethod
@@ -82,6 +99,13 @@ class SimulationRequest(BaseModel):
     def humidity_range(cls, v):
         if v is not None and (v < 0 or v > 100):
             raise ValueError("湿度范围为0-100%")
+        return v
+
+    @field_validator("max_loss_rate")
+    @classmethod
+    def max_loss_rate_range(cls, v):
+        if v is not None and (v < 0 or v > 100):
+            raise ValueError("最大允许损耗率范围为0-100%")
         return v
 
     @model_validator(mode="after")
@@ -126,6 +150,14 @@ class LayerInfo(BaseModel):
     moisture_risk: float
 
 
+class MitigationAdvice(BaseModel):
+    pressure_advice: List[str] = []
+    moisture_advice: List[str] = []
+    loss_advice: List[str] = []
+    stability_advice: List[str] = []
+    general_advice: List[str] = []
+
+
 class SimulationResult(BaseModel):
     total_bags: int
     bottom_pressure_kpa: float
@@ -134,12 +166,14 @@ class SimulationResult(BaseModel):
     moisture_risk_level: str
     moisture_risk_score: float
     estimated_loss_rate: float
-    layer_details: list[LayerInfo]
-    warnings: list[str]
+    layer_details: List[LayerInfo]
+    warnings: List[str]
     is_high_risk: bool
     can_execute: bool
     capacity_used_pct: float
     is_formal_assessment: bool
+    mitigation_advice: MitigationAdvice = MitigationAdvice()
+    feasibility_score: float = 0.0
 
 
 class ComparisonItem(BaseModel):
@@ -148,7 +182,79 @@ class ComparisonItem(BaseModel):
 
 
 class ComparisonResult(BaseModel):
-    items: list[ComparisonItem]
+    items: List[ComparisonItem]
     best_order: LoadingOrder
     best_loss_rate: float
     is_formal_assessment: bool
+
+
+class SchemePlan(BaseModel):
+    scheme_id: str
+    scheme_name: str
+    loading_order: LoadingOrder
+    layers: int
+    bags_per_layer: int
+    total_bags: int
+    result: SimulationResult
+    status: RecommendationStatus
+    score: float
+    rank: int = 0
+
+
+class MultiSchemeResult(BaseModel):
+    schemes: List[SchemePlan]
+    recommended_count: int
+    alternative_count: int
+    high_risk_count: int
+    informal_count: int
+    best_scheme_id: Optional[str] = None
+    is_formal_assessment: bool
+    priority_target: PriorityTarget
+
+
+class BatchCompareRequest(BaseModel):
+    cabin: CabinConfig
+    bag: BagSpec
+    grain_type: GrainType
+    voyage_days: int
+    loading_order: LoadingOrder = LoadingOrder.even
+    humidity_values: List[float]
+    sea_state_values: List[SeaState]
+    layers: Optional[int] = None
+    max_loss_rate: Optional[float] = 10.0
+    max_layers: Optional[int] = None
+    priority_target: PriorityTarget = PriorityTarget.balance
+
+    @field_validator("humidity_values")
+    @classmethod
+    def validate_humidity_values(cls, v):
+        if not v:
+            raise ValueError("至少需要指定一个湿度值")
+        for h in v:
+            if h < 0 or h > 100:
+                raise ValueError(f"湿度值 {h} 超出范围(0-100)")
+        return v
+
+    @field_validator("sea_state_values")
+    @classmethod
+    def validate_sea_state_values(cls, v):
+        if not v:
+            raise ValueError("至少需要指定一个海况值")
+        return v
+
+
+class BatchCell(BaseModel):
+    humidity: float
+    sea_state: SeaState
+    result: Optional[SimulationResult] = None
+    error: Optional[str] = None
+    is_high_risk: bool = False
+    is_formal: bool = True
+
+
+class BatchCompareResult(BaseModel):
+    humidity_values: List[float]
+    sea_state_values: List[SeaState]
+    cells: List[List[BatchCell]]
+    best_cell: Optional[dict] = None
+    is_any_formal: bool

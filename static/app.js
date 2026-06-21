@@ -1071,7 +1071,7 @@ function renderMonitorRecordDetail(rec) {
         <div class="result-card ${rec.warning_level === 'normal' ? '' : 'loss'}">
             <div class="label">运输状态</div>
             <div class="value" style="color:${rec.transport_status === '正常' ? 'var(--success)' : 'var(--danger)'}">${rec.transport_status}</div>
-            <div class="sub">处置状态: ${DISPOSAL_STATUS_LABELS[rec.disposal_status] || rec.disposal_status}</div>
+            <div class="sub">${rec.warnings.length === 0 ? '处置: 正常' : (rec.disposal_status === 'closed' ? '处置: 已闭环' : rec.disposal_status === 'completed' ? '处置: 已处置' : '处置: ' + (DISPOSAL_STATUS_LABELS[rec.disposal_status] || rec.disposal_status))}</div>
         </div>
     </div>`;
 
@@ -1094,21 +1094,47 @@ function renderMonitorRecordDetail(rec) {
         <div class="viz-panel"><h3>⚠ 产生预警（${rec.warnings.length}条）</h3>`;
 
     if (rec.warnings.length === 0) {
-        html += '<div style="color:var(--success);padding:10px;font-size:13px;">✅ 当日无预警</div>';
+        html += '<div style="color:var(--success);padding:10px;font-size:13px;">✅ 当日无预警，运输状态正常</div>';
     } else {
+        const suggestions = [];
+        const seen = new Set();
+        const levelOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };
+        const sortedWarnings = [...rec.warnings].sort((a, b) => (levelOrder[a.warning_level] || 99) - (levelOrder[b.warning_level] || 99));
+        sortedWarnings.forEach(w => {
+            const s = getDisposalSuggestionLocal(w.warning_type, w.warning_level);
+            if (s && !seen.has(s)) {
+                seen.add(s);
+                suggestions.push({ level: w.warning_level, text: s });
+            }
+        });
+        if (suggestions.length > 0) {
+            html += '<div class="warning-summary">';
+            html += '<div class="warning-summary-title">🛡 处置建议汇总</div>';
+            html += '<ul class="warning-summary-list">';
+            suggestions.forEach(s => {
+                const sc = { normal: 'var(--success)', low: 'var(--accent)', medium: 'var(--warn)', high: 'var(--danger)', critical: 'var(--danger)' }[s.level] || 'var(--text)';
+                html += `<li style="border-left-color:${sc}">${s.text}</li>`;
+            });
+            html += '</ul></div>';
+        }
         html += '<div class="warning-list">';
-        rec.warnings.forEach(w => {
+        sortedWarnings.forEach(w => {
             const wl = WARNING_LEVEL_LABELS[w.warning_level] || w.warning_level;
             const wc = { normal: 'var(--success)', low: 'var(--accent)', medium: 'var(--warn)', high: 'var(--danger)', critical: 'var(--danger)' }[w.warning_level] || 'var(--text)';
+            const suggestion = getDisposalSuggestionLocal(w.warning_type, w.warning_level);
             html += `<div class="warning-item level-${w.warning_level}">
                 <div class="warning-header">
                     <span class="warning-level-badge" style="background:${wc}20;color:${wc}">${wl}</span>
                     <span class="warning-type">${EVENT_LABELS[w.warning_type] || w.warning_type}</span>
                 </div>
                 <div class="warning-msg">${w.warning_message}</div>
+                ${suggestion ? `<div class="warning-suggestion">💡 建议处置：${suggestion}</div>` : ''}
                 <div class="warning-actions">
                     <span class="warning-disposal">处置: ${DISPOSAL_STATUS_LABELS[w.disposal_status] || w.disposal_status}</span>
-                    ${w.disposal_status === 'pending' ? `<button class="btn-micro" onclick="confirmWarning('${w.warning_id}')">确认</button>` : ''}
+                    ${w.disposal_status === 'pending' ? `<button class="btn-micro" onclick="confirmWarningAndRefresh('${w.warning_id}', '${rec.record_id}')">确认</button>` : ''}
+                    ${w.disposal_status === 'confirmed' ? `<span class="badge badge-info">已确认</span>` : ''}
+                    ${w.disposal_status === 'completed' ? `<span class="badge badge-success">已处置</span>` : ''}
+                    ${w.disposal_status === 'closed' ? `<span class="badge badge-success">已闭环</span>` : ''}
                 </div>
             </div>`;
         });
@@ -1116,7 +1142,7 @@ function renderMonitorRecordDetail(rec) {
     }
     html += `</div></div>`;
 
-    if (rec.disposal_status !== 'completed' && rec.disposal_status !== 'closed') {
+    if (rec.warnings.length > 0 && rec.disposal_status !== 'completed' && rec.disposal_status !== 'closed') {
         html += `<div class="viz-panel">
             <h3>🔧 处置操作</h3>
             <div class="disposal-form">
@@ -1150,10 +1176,64 @@ function renderMonitorRecordDetail(rec) {
     main.innerHTML = html;
 }
 
-async function confirmWarning(warningId) {
+const DISPOSAL_SUGGESTIONS = {
+    humidity_spike: {
+        low: '增加通风频次，放置干燥剂',
+        medium: '启动除湿设备，检查舱体密封性，加强巡检至每4小时一次',
+        high: '紧急除湿，排查渗漏源，对受潮区域粮包加铺防潮层',
+        critical: '立即启动应急除湿，转移高风险粮包，上报指挥部'
+    },
+    temp_spike: {
+        medium: '加强通风散热，检查粮温是否异常升温',
+        high: '启动降温设备，开舱散热（如海况允许），检查是否有自热现象',
+        critical: '紧急降温，排查自热或火情隐患，转移高温区域粮包'
+    },
+    hull_shake: {
+        high: '加固绑绳和挡板，降低航速，检查堆码是否有位移',
+        critical: '紧急停航避风，全面检查粮包位移和损伤情况'
+    },
+    pressure_worsen: {
+        medium: '检查底层粮包承压状况，必要时减层降压',
+        high: '对压损区域粮包进行抽检和补包，调整堆码结构'
+    },
+    moisture_spread: {
+        high: '标记受潮扩散边界，对受潮粮包隔离处置，加大除湿力度',
+        critical: '紧急隔离发霉粮包，全面消杀，防止霉变蔓延'
+    },
+    bag_damage: {
+        high: '对破损粮包紧急补包或换包，加固周围粮包防止连锁位移'
+    },
+    water_leak: {
+        critical: '紧急堵漏，排水，转移浸水粮包，上报指挥部请求靠港'
+    }
+};
+
+function getDisposalSuggestionLocal(warningType, warningLevel) {
+    const typeSuggestions = DISPOSAL_SUGGESTIONS[warningType];
+    if (!typeSuggestions) return '密切关注，按规范巡检处置';
+    return typeSuggestions[warningLevel] || typeSuggestions['high'] || typeSuggestions['critical'] || '密切关注，按规范巡检处置';
+}
+
+async function confirmWarningAndRefresh(warningId, recordId) {
     try {
         await apiCall(`/monitor/warning/${warningId}/confirm`, { confirmed: true });
-        alert('预警已确认');
+        const res = await fetch(`${API}/monitor/record/${encodeURIComponent(recordId)}`);
+        if (res.ok) {
+            const rec = await res.json();
+            renderMonitorRecordDetail(rec);
+        }
+    } catch (e) {
+        alert('确认失败: ' + e.message);
+    }
+}
+
+async function confirmWarningAndRefreshHistory(warningId) {
+    try {
+        await apiCall(`/monitor/warning/${warningId}/confirm`, { confirmed: true });
+        const voyageId = document.getElementById('mon_query_voyage').value.trim();
+        if (voyageId) {
+            queryVoyageWarnings();
+        }
     } catch (e) {
         alert('确认失败: ' + e.message);
     }
@@ -1225,7 +1305,7 @@ function renderVoyageRecordsList(voyageId, records) {
             <td style="color:${wColor};font-weight:700;">${r.risk_score.toFixed(3)}</td>
             <td style="color:${wColor};">${WARNING_LEVEL_LABELS[r.warning_level] || r.warning_level}</td>
             <td style="color:${tColor};font-weight:600;">${r.transport_status}</td>
-            <td>${DISPOSAL_STATUS_LABELS[r.disposal_status] || r.disposal_status}</td>
+            <td>${(r.warnings && r.warnings.length === 0) ? '正常' : (DISPOSAL_STATUS_LABELS[r.disposal_status] || r.disposal_status)}</td>
             <td><button class="btn-micro" onclick="viewRecordDetail('${r.record_id}')">详情</button></td>
         </tr>`;
     });
@@ -1285,6 +1365,7 @@ function renderWarningsHistory(voyageId, warnings) {
     warnings.forEach(w => {
         const wl = WARNING_LEVEL_LABELS[w.warning_level] || w.warning_level;
         const wc = { normal: 'var(--success)', low: 'var(--accent)', medium: 'var(--warn)', high: 'var(--danger)', critical: 'var(--danger)' }[w.warning_level] || 'var(--text)';
+        const suggestion = getDisposalSuggestionLocal(w.warning_type, w.warning_level);
         html += `<div class="warning-item level-${w.warning_level}">
             <div class="warning-header">
                 <span class="warning-level-badge" style="background:${wc}20;color:${wc}">${wl}</span>
@@ -1292,11 +1373,15 @@ function renderWarningsHistory(voyageId, warnings) {
                 <span class="warning-date">${w.record_date}</span>
             </div>
             <div class="warning-msg">${w.warning_message}</div>
+            ${suggestion ? `<div class="warning-suggestion">💡 建议处置：${suggestion}</div>` : ''}
             <div class="warning-actions">
                 <span class="warning-disposal">处置: ${DISPOSAL_STATUS_LABELS[w.disposal_status] || w.disposal_status}</span>
                 ${w.disposal_time ? `<span class="warning-time">处置时间: ${w.disposal_time.substring(0, 16)}</span>` : ''}
                 ${w.disposal_action ? `<span class="warning-action-text">措施: ${w.disposal_action}</span>` : ''}
-                ${w.disposal_status === 'pending' ? `<button class="btn-micro" onclick="confirmWarning('${w.warning_id}');queryVoyageWarnings();">确认</button>` : ''}
+                ${w.disposal_status === 'pending' ? `<button class="btn-micro" onclick="confirmWarningAndRefreshHistory('${w.warning_id}')">确认</button>` : ''}
+                ${w.disposal_status === 'confirmed' ? `<span class="badge badge-info">已确认</span>` : ''}
+                ${w.disposal_status === 'completed' ? `<span class="badge badge-success">已处置</span>` : ''}
+                ${w.disposal_status === 'closed' ? `<span class="badge badge-success">已闭环</span>` : ''}
             </div>
         </div>`;
     });

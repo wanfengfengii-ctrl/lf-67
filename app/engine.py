@@ -979,10 +979,6 @@ def create_daily_record(inp: DailyMonitorInput) -> DailyMonitorOutput:
         "created_at": datetime.now().isoformat(),
     }
 
-    if warning_level in (WarningLevel.high, WarningLevel.critical):
-        record["transport_status"] = "异常待处置"
-        record["disposal_status"] = DisposalStatus.pending.value
-
     _monitor_store[record_id] = record
 
     for w in generated_warnings:
@@ -1005,6 +1001,8 @@ def create_daily_record(inp: DailyMonitorInput) -> DailyMonitorOutput:
             risk_score=risk_score,
         )
         _warning_store[a_warn.warning_id] = a_warn.model_dump()
+
+    _recalculate_record_status(record_id)
 
     all_warnings = _get_warnings_for_record(record_id)
 
@@ -1037,6 +1035,50 @@ def _get_warnings_for_record(record_id: str) -> list:
         if w.get("voyage_id") == record["voyage_id"]
         and str(w.get("record_date")) == str(record["record_date"])
     ]
+
+
+def _recalculate_record_status(record_id: str) -> None:
+    record = _monitor_store.get(record_id)
+    if not record:
+        return
+
+    warnings = _get_warnings_for_record(record_id)
+
+    if not warnings:
+        record["disposal_status"] = DisposalStatus.closed.value
+        record["transport_status"] = "正常"
+        return
+
+    level_order = {
+        WarningLevel.normal: 0,
+        WarningLevel.low: 1,
+        WarningLevel.medium: 2,
+        WarningLevel.high: 3,
+        WarningLevel.critical: 4,
+    }
+    max_level = WarningLevel.normal
+    for w in warnings:
+        if level_order.get(w.warning_level, 0) > level_order.get(max_level, 0):
+            max_level = w.warning_level
+
+    if max_level in (WarningLevel.high, WarningLevel.critical):
+        record["transport_status"] = "异常待处置"
+    else:
+        record["transport_status"] = "正常"
+
+    status_order = {
+        DisposalStatus.closed: 0,
+        DisposalStatus.completed: 1,
+        DisposalStatus.processing: 2,
+        DisposalStatus.confirmed: 3,
+        DisposalStatus.pending: 4,
+    }
+    worst_status = DisposalStatus.closed
+    for w in warnings:
+        if status_order.get(w.disposal_status, 0) > status_order.get(worst_status, 0):
+            worst_status = w.disposal_status
+
+    record["disposal_status"] = worst_status.value
 
 
 def get_voyage_records(voyage_id: str) -> list:
@@ -1113,6 +1155,15 @@ def confirm_warning(warning_id: str, confirmed: bool = True) -> Optional[Warning
         and w["disposal_status"] != DisposalStatus.closed.value
     )
     _warning_store[warning_id] = w
+
+    voyage_id = w.get("voyage_id")
+    record_date = w.get("record_date")
+    if voyage_id and record_date:
+        for rec in _monitor_store.values():
+            if rec["voyage_id"] == voyage_id and str(rec["record_date"]) == str(record_date):
+                _recalculate_record_status(rec["record_id"])
+                break
+
     return WarningRecordOutput(**w)
 
 
@@ -1168,6 +1219,12 @@ def report_abnormal(inp: AbnormalReportInput) -> WarningRecordOutput:
         is_high_risk_unresolved=inp.severity in (WarningLevel.high, WarningLevel.critical),
     )
     _warning_store[warning_id] = w.model_dump()
+
+    for rec in _monitor_store.values():
+        if rec["voyage_id"] == inp.voyage_id and str(rec["record_date"]) == str(inp.record_date):
+            _recalculate_record_status(rec["record_id"])
+            break
+
     return w
 
 

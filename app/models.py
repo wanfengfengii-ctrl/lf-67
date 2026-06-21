@@ -86,9 +86,23 @@ class SimulationRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_capacity(self):
+        if self.bag.length > self.cabin.length:
+            raise ValueError(
+                f"粮包长度({self.bag.length:.2f}m)大于船舱长度({self.cabin.length:.2f}m)，无法放入"
+            )
+        if self.bag.width > self.cabin.width:
+            raise ValueError(
+                f"粮包宽度({self.bag.width:.2f}m)大于船舱宽度({self.cabin.width:.2f}m)，无法放入"
+            )
+        if self.bag.height > self.cabin.height:
+            raise ValueError(
+                f"粮包高度({self.bag.height:.2f}m)大于船舱高度({self.cabin.height:.2f}m)，无法放入"
+            )
         cabin_vol = self.cabin.length * self.cabin.width * self.cabin.height
-        bags_per_layer_x = max(1, int(self.cabin.length // self.bag.length))
-        bags_per_layer_y = max(1, int(self.cabin.width // self.bag.width))
+        bags_per_layer_x = int(self.cabin.length // self.bag.length)
+        bags_per_layer_y = int(self.cabin.width // self.bag.width)
+        if bags_per_layer_x <= 0 or bags_per_layer_y <= 0:
+            raise ValueError("粮包尺寸过大，船舱内无法放置任何粮包")
         bags_per_layer = bags_per_layer_x * bags_per_layer_y
         total_height = self.layers * self.bag.height
         if total_height > self.cabin.height:
@@ -125,6 +139,7 @@ class SimulationResult(BaseModel):
     is_high_risk: bool
     can_execute: bool
     capacity_used_pct: float
+    is_formal_assessment: bool
 
 
 class ComparisonItem(BaseModel):
@@ -136,3 +151,4 @@ class ComparisonResult(BaseModel):
     items: list[ComparisonItem]
     best_order: LoadingOrder
     best_loss_rate: float
+    is_formal_assessment: bool

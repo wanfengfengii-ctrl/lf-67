@@ -108,9 +108,9 @@ function renderResult(req, r) {
             <div class="sub">风险指数 ${r.moisture_risk_score.toFixed(3)}</div>
         </div>
         <div class="result-card loss">
-            <div class="label">预计损耗率</div>
-            <div class="value" style="color:${r.estimated_loss_rate > 10 ? 'var(--danger)' : r.estimated_loss_rate > 5 ? 'var(--warn)' : 'var(--text)'}">${r.estimated_loss_rate.toFixed(2)}%</div>
-            <div class="sub">压缩率 ${r.max_compression_ratio.toFixed(3)}</div>
+            <div class="label">预计损耗率 ${!r.is_formal_assessment ? '<span class="badge badge-warn" style="margin-left:6px;font-size:10px;">非正式</span>' : ''}</div>
+            <div class="value" style="color:${!r.is_formal_assessment ? 'var(--text2)' : r.estimated_loss_rate > 10 ? 'var(--danger)' : r.estimated_loss_rate > 5 ? 'var(--warn)' : 'var(--text)'}; opacity:${r.is_formal_assessment ? 1 : 0.6}">${r.estimated_loss_rate.toFixed(2)}%</div>
+            <div class="sub">压缩率 ${r.max_compression_ratio.toFixed(3)}${!r.is_formal_assessment ? ' · 湿度缺失仅供参考' : ''}</div>
         </div>
         <div class="result-card execute">
             <div class="label">可执行性</div>
@@ -162,8 +162,9 @@ function renderComparison(req, comp) {
     const main = document.getElementById('main_content');
     const best = comp.best_order;
 
+    const formalBadge = !comp.is_formal_assessment ? '<span class="badge badge-warn" style="margin-left:8px;font-size:11px;">非正式评估</span>' : '';
     let html = `<div class="viz-panel" style="margin-bottom:24px;">
-        <h3>⚖ 装载方案对比 <span style="font-size:12px;color:var(--text2);font-weight:400;">（最优方案: ${ORDER_LABELS[best]}，损耗率 ${comp.best_loss_rate.toFixed(2)}%）</span></h3>
+        <h3>⚖ 装载方案对比 ${formalBadge} <span style="font-size:12px;color:var(--text2);font-weight:400;">（最优方案: ${ORDER_LABELS[best]}，损耗率 ${comp.best_loss_rate.toFixed(2)}%）</span></h3>
         <table class="comparison-table">
             <tr>
                 <th>装载方式</th>
@@ -439,3 +440,31 @@ function drawBarCompare(canvas, labels, values, unit, title) {
     ctx.textAlign = 'center';
     ctx.fillText(title + ' (' + unit + ')', margin.left - 4, margin.top - 6);
 }
+
+let autoSimulateTimer = null;
+let lastAutoReq = null;
+
+function scheduleAutoSimulate() {
+    if (autoSimulateTimer) clearTimeout(autoSimulateTimer);
+    autoSimulateTimer = setTimeout(() => {
+        try {
+            const req = getFormData();
+            if (lastResult && JSON.stringify(req) !== JSON.stringify(lastAutoReq)) {
+                lastAutoReq = req;
+                apiCall('/simulate', req).then(result => {
+                    lastResult = result;
+                    lastReq = req;
+                    renderResult(req, result);
+                }).catch(() => {});
+            }
+        } catch (e) {}
+    }, 500);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const inputs = document.querySelectorAll('.panel input, .panel select');
+    inputs.forEach(input => {
+        input.addEventListener('input', scheduleAutoSimulate);
+        input.addEventListener('change', scheduleAutoSimulate);
+    });
+});

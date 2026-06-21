@@ -63,8 +63,10 @@ CRITICAL_LAYERS = 12
 
 
 def _calculate_bags_per_layer(req: SimulationRequest) -> int:
-    x_count = max(1, int(req.cabin.length // req.bag.length))
-    y_count = max(1, int(req.cabin.width // req.bag.width))
+    x_count = int(req.cabin.length // req.bag.length)
+    y_count = int(req.cabin.width // req.bag.width)
+    if x_count <= 0 or y_count <= 0:
+        return 0
     return x_count * y_count
 
 
@@ -191,6 +193,7 @@ def simulate(req: SimulationRequest) -> SimulationResult:
     has_severe_warning = any("严重" in w or "超出" in w or "倒塌" in w for w in warnings)
     is_high_risk = estimated_loss > 10 or moisture_risk_score > 0.6 or req.sea_state == SeaState.very_rough
     can_execute = not is_high_risk and not has_severe_warning
+    is_formal = req.humidity is not None
 
     if is_high_risk:
         warnings.append("该方案为高风险方案，不可标记为可执行")
@@ -208,6 +211,7 @@ def simulate(req: SimulationRequest) -> SimulationResult:
         is_high_risk=is_high_risk,
         can_execute=can_execute,
         capacity_used_pct=round(min(capacity_used, 100), 1),
+        is_formal_assessment=is_formal,
     )
 
 
@@ -228,4 +232,5 @@ def compare_schemes(req: SimulationRequest) -> ComparisonResult:
         items=items,
         best_order=best_order,
         best_loss_rate=best_loss,
+        is_formal_assessment=req.humidity is not None,
     )

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>漕船粮包堆码模拟系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header-icon">🚢</div>
+        <div>
+            <h1>漕船粮包堆码模拟系统</h1>
+            <p>模拟舱内粮包堆码方式，评估压损、受潮与损耗风险</p>
+        </div>
+    </header>
+
+    <div class="main-layout">
+        <aside class="panel">
+            <div class="section-title">船舱参数</div>
+            <div class="form-group">
+                <label>船舱长 (m)</label>
+                <input type="number" id="cabin_length" value="8" min="0.1" step="0.1">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>船舱宽 (m)</label>
+                    <input type="number" id="cabin_width" value="3" min="0.1" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label>船舱高 (m)</label>
+                    <input type="number" id="cabin_height" value="2.5" min="0.1" step="0.1">
+                </div>
+            </div>
+
+            <hr class="divider">
+            <div class="section-title">粮包规格</div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>长 (m)</label>
+                    <input type="number" id="bag_length" value="0.8" min="0.01" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label>宽 (m)</label>
+                    <input type="number" id="bag_width" value="0.5" min="0.01" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label>高 (m)</label>
+                    <input type="number" id="bag_height" value="0.3" min="0.01" step="0.01">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>单包重量 (kg)</label>
+                <input type="number" id="bag_weight" value="50" min="0.1" step="0.1">
+            </div>
+
+            <hr class="divider">
+            <div class="section-title">装载配置</div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>堆码层数</label>
+                    <input type="number" id="layers" value="6" min="1" max="20" step="1">
+                </div>
+                <div class="form-group">
+                    <label>航行天数</label>
+                    <input type="number" id="voyage_days" value="15" min="1" step="1">
+                </div>
+            </div>
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label>粮食品类</label>
+                    <select id="grain_type">
+                        <option value="rice">稻米</option>
+                        <option value="wheat">小麦</option>
+                        <option value="millet">粟米</option>
+                        <option value="sorghum">高粱</option>
+                        <option value="soybean">大豆</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>装载方式</label>
+                    <select id="loading_order">
+                        <option value="even">均匀分布</option>
+                        <option value="bottom_heavy">底层加重</option>
+                        <option value="top_heavy">顶层加重</option>
+                        <option value="pyramid">金字塔式</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>海况/船体摇晃</label>
+                <select id="sea_state">
+                    <option value="calm">平静</option>
+                    <option value="slight">轻微摇晃</option>
+                    <option value="moderate">中等摇晃</option>
+                    <option value="rough">剧烈摇晃</option>
+                    <option value="very_rough">极端摇晃</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>环境湿度 (%) <span style="color:var(--warn);font-size:11px;">— 留空则不生成正式损耗评估</span></label>
+                <input type="number" id="humidity" placeholder="0-100" min="0" max="100" step="1">
+            </div>
+
+            <hr class="divider">
+            <button class="btn-primary" id="btn_simulate" onclick="runSimulation()">▶ 运行模拟</button>
+            <div style="height:10px;"></div>
+            <button class="btn-secondary" onclick="runComparison()">⚖ 对比所有装载方案</button>
+        </aside>
+
+        <main class="content" id="main_content">
+            <div class="empty-state">
+                <div class="icon">🚢</div>
+                <p>配置左侧参数后点击"运行模拟"开始</p>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

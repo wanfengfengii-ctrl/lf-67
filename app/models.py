@@ -455,3 +455,300 @@ class VoyageSummaryOutput(BaseModel):
     pressure_risk_trend: List[RiskTrendPoint]
     moisture_risk_trend: List[RiskTrendPoint]
     disposal_comparison: Optional[Dict] = None
+
+
+class ShipStatus(str, Enum):
+    available = "available"
+    in_voyage = "in_voyage"
+    maintenance = "maintenance"
+    loading = "loading"
+    unloading = "unloading"
+
+
+SHIP_STATUS_LABELS = {
+    ShipStatus.available: "可用",
+    ShipStatus.in_voyage: "航行中",
+    ShipStatus.maintenance: "维护中",
+    ShipStatus.loading: "装货中",
+    ShipStatus.unloading: "卸货中",
+}
+
+
+class Ship(BaseModel):
+    ship_id: str
+    ship_name: str
+    cabin_length: float
+    cabin_width: float
+    cabin_height: float
+    capacity_tons: float
+    max_speed: float
+    status: ShipStatus = ShipStatus.available
+    current_port: str = ""
+    crew_count: int = 0
+    last_maintenance_date: Optional[date] = None
+    note: str = ""
+
+
+class Port(BaseModel):
+    port_id: str
+    port_name: str
+    berth_count: int
+    loading_rate: float
+    unloading_rate: float
+    storage_capacity: float
+    note: str = ""
+
+
+class WeatherCondition(str, Enum):
+    sunny = "sunny"
+    cloudy = "cloudy"
+    rainy = "rainy"
+    stormy = "stormy"
+    foggy = "foggy"
+
+
+WEATHER_CONDITION_LABELS = {
+    WeatherCondition.sunny: "晴朗",
+    WeatherCondition.cloudy: "多云",
+    WeatherCondition.rainy: "雨天",
+    WeatherCondition.stormy: "暴风雨",
+    WeatherCondition.foggy: "大雾",
+}
+
+
+class WeatherForecast(BaseModel):
+    port_id: str
+    forecast_date: date
+    condition: WeatherCondition
+    wind_level: int
+    sea_state: SeaState
+    visibility_km: float
+    affect_voyage: bool = False
+
+
+class VoyagePriority(str, Enum):
+    emergency = "emergency"
+    high = "high"
+    normal = "normal"
+    low = "low"
+
+
+VOYAGE_PRIORITY_LABELS = {
+    VoyagePriority.emergency: "紧急",
+    VoyagePriority.high: "高优先级",
+    VoyagePriority.normal: "普通",
+    VoyagePriority.low: "低优先级",
+}
+
+
+class VoyageStatus(str, Enum):
+    pending = "pending"
+    loading = "loading"
+    sailing = "sailing"
+    unloading = "unloading"
+    completed = "completed"
+    delayed = "delayed"
+    cancelled = "cancelled"
+
+
+VOYAGE_STATUS_LABELS = {
+    VoyageStatus.pending: "待调度",
+    VoyageStatus.loading: "装货中",
+    VoyageStatus.sailing: "航行中",
+    VoyageStatus.unloading: "卸货中",
+    VoyageStatus.completed: "已完成",
+    VoyageStatus.delayed: "延期中",
+    VoyageStatus.cancelled: "已取消",
+}
+
+
+class VoyageSchedule(BaseModel):
+    voyage_id: str
+    ship_id: str
+    ship_name: str = ""
+    grain_type: GrainType
+    grain_weight: float
+    origin_port: str
+    destination_port: str
+    priority: VoyagePriority = VoyagePriority.normal
+    status: VoyageStatus = VoyageStatus.pending
+    planned_departure_date: date
+    planned_arrival_date: date
+    actual_departure_date: Optional[date] = None
+    actual_arrival_date: Optional[date] = None
+    voyage_days: int
+    sea_state: SeaState = SeaState.calm
+    humidity: Optional[float] = None
+    loading_order: LoadingOrder = LoadingOrder.even
+    layers: int = 6
+    risk_score: float = 0.0
+    risk_level: WarningLevel = WarningLevel.normal
+    has_unresolved_high_risk: bool = False
+    warning_count: int = 0
+    high_risk_warning_count: int = 0
+    disposal_progress: float = 0.0
+    scheme_id: Optional[str] = None
+    scheme_result: Optional[SimulationResult] = None
+    delay_days: int = 0
+    delay_reason: str = ""
+    note: str = ""
+
+
+class ScheduleConflict(BaseModel):
+    conflict_id: str
+    conflict_type: str
+    severity: WarningLevel
+    description: str
+    involved_voyages: List[str]
+    involved_ships: List[str]
+    involved_ports: List[str]
+    suggestion: str = ""
+
+
+class PortCongestionInfo(BaseModel):
+    port_id: str
+    port_name: str
+    current_berth_usage: float
+    waiting_voyages: int
+    estimated_wait_days: float
+    congestion_level: str
+
+
+class ResourceShortage(BaseModel):
+    resource_type: str
+    shortage_amount: float
+    severity: WarningLevel
+    description: str
+    affected_voyages: List[str]
+
+
+class DispatchRecommendation(BaseModel):
+    recommendation_id: str
+    voyage_id: str
+    ship_id: str
+    recommended_action: str
+    recommended_departure_date: Optional[date] = None
+    priority_score: float
+    reason: str
+    risk_assessment: str
+    is_recommended: bool = True
+
+
+class DispatchDashboard(BaseModel):
+    total_ships: int
+    available_ships: int
+    total_voyages: int
+    pending_voyages: int
+    sailing_voyages: int
+    completed_voyages: int
+    delayed_voyages: int
+    high_risk_voyages: int
+    total_warnings: int
+    unresolved_warnings: int
+    avg_disposal_progress: float
+
+
+class RiskRankItem(BaseModel):
+    rank: int
+    voyage_id: str
+    ship_name: str
+    grain_type: str
+    risk_score: float
+    risk_level: str
+    warning_count: int
+    high_risk_count: int
+    has_unresolved: bool
+    priority: str
+    status: str
+
+
+class DelayImpactItem(BaseModel):
+    voyage_id: str
+    ship_name: str
+    grain_type: str
+    original_arrival: date
+    estimated_arrival: date
+    delay_days: int
+    delay_reason: str
+    impact_level: str
+    grain_loss_estimate: float
+    economic_loss_estimate: float
+    affected_other_voyages: List[str]
+    suggestion: str
+
+
+class SchedulePlanInput(BaseModel):
+    target_date: Optional[date] = None
+    consider_weather: bool = True
+    consider_port_capacity: bool = True
+    consider_ship_availability: bool = True
+    high_risk_block: bool = True
+
+
+class DispatchResult(BaseModel):
+    dashboard: DispatchDashboard
+    recommended_schedules: List[DispatchRecommendation]
+    risk_ranking: List[RiskRankItem]
+    delay_assessment: List[DelayImpactItem]
+    conflicts: List[ScheduleConflict]
+    port_congestions: List[PortCongestionInfo]
+    resource_shortages: List[ResourceShortage]
+    generation_time: str
+
+
+class ShipCreateInput(BaseModel):
+    ship_name: str
+    cabin_length: float
+    cabin_width: float
+    cabin_height: float
+    capacity_tons: float
+    max_speed: float
+    status: ShipStatus = ShipStatus.available
+    current_port: str = ""
+    crew_count: int = 0
+    note: str = ""
+
+
+class VoyageCreateInput(BaseModel):
+    ship_id: str
+    grain_type: GrainType
+    grain_weight: float
+    origin_port: str
+    destination_port: str
+    priority: VoyagePriority = VoyagePriority.normal
+    planned_departure_date: date
+    planned_arrival_date: date
+    voyage_days: int
+    sea_state: SeaState = SeaState.calm
+    humidity: Optional[float] = None
+    loading_order: LoadingOrder = LoadingOrder.even
+    layers: int = 6
+    note: str = ""
+
+
+class VoyageUpdateInput(BaseModel):
+    status: Optional[VoyageStatus] = None
+    actual_departure_date: Optional[date] = None
+    actual_arrival_date: Optional[date] = None
+    delay_days: Optional[int] = None
+    delay_reason: Optional[str] = None
+    note: Optional[str] = None
+
+
+class WeatherCreateInput(BaseModel):
+    port_id: str
+    forecast_date: date
+    condition: WeatherCondition
+    wind_level: int
+    sea_state: SeaState
+    visibility_km: float
+    affect_voyage: bool = False
+
+
+class PortCreateInput(BaseModel):
+    port_name: str
+    berth_count: int
+    loading_rate: float
+    unloading_rate: float
+    storage_capacity: float
+    note: str = ""

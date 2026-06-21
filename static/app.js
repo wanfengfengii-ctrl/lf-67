@@ -923,6 +923,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const today = new Date().toISOString().split('T')[0];
     const dateInput = document.getElementById('mon_record_date');
     if (dateInput) dateInput.value = today;
+
+    const depDate = document.getElementById('disp_new_dep');
+    const arrDate = document.getElementById('disp_new_arr');
+    if (depDate) depDate.value = today;
+    if (arrDate) {
+        const arr = new Date();
+        arr.setDate(arr.getDate() + 15);
+        arrDate.value = arr.toISOString().split('T')[0];
+    }
 });
 
 const WARNING_LEVEL_LABELS = {
@@ -950,8 +959,10 @@ function switchModule(mod) {
     currentModule = mod;
     document.getElementById('nav_sim').classList.toggle('active', mod === 'sim');
     document.getElementById('nav_monitor').classList.toggle('active', mod === 'monitor');
+    document.getElementById('nav_dispatch').classList.toggle('active', mod === 'dispatch');
     document.getElementById('panel_sim').style.display = mod === 'sim' ? '' : 'none';
     document.getElementById('panel_monitor').style.display = mod === 'monitor' ? '' : 'none';
+    document.getElementById('panel_dispatch').style.display = mod === 'dispatch' ? '' : 'none';
     if (mod === 'monitor') {
         currentView = 'monitor_empty';
         const main = document.getElementById('main_content');
@@ -963,6 +974,23 @@ function switchModule(mod) {
                 <div class="hint-card"><span class="hint-icon">⚠</span><div><b>预警处置</b><p>自动识别风险并给出预警等级与处置建议</p></div></div>
                 <div class="hint-card"><span class="hint-icon">📊</span><div><b>趋势分析</b><p>查看风险趋势图与处置前后对比</p></div></div>
                 <div class="hint-card"><span class="hint-icon">🚨</span><div><b>异常上报</b><p>紧急异常事件快速上报与闭环</p></div></div>
+            </div>
+        </div>`;
+    } else if (mod === 'dispatch') {
+        currentView = 'dispatch_empty';
+        loadDispatchData();
+        const main = document.getElementById('main_content');
+        main.innerHTML = `<div class="empty-state">
+            <div class="icon">🚢</div>
+            <p>多航次调度与综合决策模块</p>
+            <div class="empty-hints">
+                <div class="hint-card"><span class="hint-icon">🎯</span><div><b>智能调度</b><p>自动生成多航次调度建议方案</p></div></div>
+                <div class="hint-card"><span class="hint-icon">📊</span><div><b>风险排名</b><p>按风险等级排序所有航次</p></div></div>
+                <div class="hint-card"><span class="hint-icon">⏰</span><div><b>延期评估</b><p>评估延期影响与损失预估</p></div></div>
+                <div class="hint-card"><span class="hint-icon">⚓</span><div><b>资源管理</b><p>统一管理船只、港口与航次</p></div></div>
+            </div>
+            <div style="margin-top:20px;">
+                <button class="btn-primary" onclick="generateDispatchPlan()">🎯 生成调度方案</button>
             </div>
         </div>`;
     } else {
@@ -1787,4 +1815,565 @@ async function submitAbnormalReport() {
     } catch (e) {
         alert('上报失败: ' + e.message);
     }
+}
+
+const SHIP_STATUS_LABELS = {
+    available: '可用', in_voyage: '航行中', maintenance: '维护中',
+    loading: '装货中', unloading: '卸货中'
+};
+
+const VOYAGE_STATUS_LABELS = {
+    pending: '待调度', loading: '装货中', sailing: '航行中',
+    unloading: '卸货中', completed: '已完成', delayed: '延期中', cancelled: '已取消'
+};
+
+const VOYAGE_PRIORITY_LABELS = {
+    emergency: '紧急', high: '高优先级', normal: '普通', low: '低优先级'
+};
+
+let lastDispatchResult = null;
+let allShips = [];
+let allPorts = [];
+let allVoyages = [];
+
+async function loadDispatchData() {
+    try {
+        allShips = await apiCall('/dispatch/ships', null, 'GET');
+        allPorts = await apiCall('/dispatch/ports', null, 'GET');
+        allVoyages = await apiCall('/dispatch/voyages', null, 'GET');
+        populateDispatchSelects();
+    } catch (e) {
+        console.error('加载调度数据失败:', e);
+    }
+}
+
+function populateDispatchSelects() {
+    const shipSelect = document.getElementById('disp_new_ship');
+    if (shipSelect) {
+        shipSelect.innerHTML = '<option value="">请选择船只</option>';
+        allShips.forEach(s => {
+            shipSelect.innerHTML += `<option value="${s.ship_id}">${s.ship_name} (${s.capacity_tons}吨)</option>`;
+        });
+    }
+    const originSelect = document.getElementById('disp_new_origin');
+    const destSelect = document.getElementById('disp_new_dest');
+    if (originSelect && destSelect) {
+        const options = allPorts.map(p => `<option value="${p.port_id}">${p.port_name}</option>`).join('');
+        originSelect.innerHTML = '<option value="">请选择</option>' + options;
+        destSelect.innerHTML = '<option value="">请选择</option>' + options;
+    }
+}
+
+async function generateDispatchPlan() {
+    if (isComputing) return;
+    isComputing = true;
+    try {
+        const body = {
+            consider_weather: document.getElementById('disp_consider_weather').checked,
+            consider_port_capacity: document.getElementById('disp_consider_port').checked,
+            consider_ship_availability: document.getElementById('disp_consider_ship').checked,
+            high_risk_block: document.getElementById('disp_high_risk_block').checked
+        };
+        const result = await apiCall('/dispatch/plan', body);
+        lastDispatchResult = result;
+        renderDispatchDashboard(result);
+    } catch (e) {
+        alert('生成调度方案失败: ' + e.message);
+    } finally {
+        isComputing = false;
+    }
+}
+
+function renderDispatchDashboard(data) {
+    const main = document.getElementById('main_content');
+    const d = data.dashboard;
+
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">🚢 多航次调度与综合决策看板</h2>`;
+    html += `<div style="margin-bottom:12px;color:var(--text2);font-size:12px;">生成时间: ${data.generation_time}</div>`;
+
+    html += `<div class="result-cards" style="margin-bottom:20px;">
+        <div class="result-card feasibility">
+            <div class="label">船只总数</div>
+            <div class="value">${d.total_ships}<span style="font-size:14px;color:var(--text2)">艘</span></div>
+            <div class="sub">可用 ${d.available_ships} 艘</div>
+        </div>
+        <div class="result-card">
+            <div class="label">航次总数</div>
+            <div class="value">${d.total_voyages}<span style="font-size:14px;color:var(--text2)">个</span></div>
+            <div class="sub">待调度 ${d.pending_voyages} · 航行中 ${d.sailing_voyages}</div>
+        </div>
+        <div class="result-card pressure">
+            <div class="label">高风险航次</div>
+            <div class="value" style="color:var(--danger)">${d.high_risk_voyages}<span style="font-size:14px;color:var(--text2)">个</span></div>
+            <div class="sub">预警总数 ${d.total_warnings} 条</div>
+        </div>
+        <div class="result-card moisture">
+            <div class="label">延期航次</div>
+            <div class="value" style="color:var(--warn)">${d.delayed_voyages}<span style="font-size:14px;color:var(--text2)">个</span></div>
+            <div class="sub">未处置预警 ${d.unresolved_warnings} 条</div>
+        </div>
+    </div>`;
+
+    html += `<div class="viz-section" style="margin-bottom:20px;">
+        <div class="viz-panel no-margin">
+            <h3>🎯 调度建议 (${data.recommended_schedules.length})</h3>
+            <div style="max-height:320px;overflow-y:auto;">
+                <table class="layer-detail-table">
+                    <tr><th>优先级</th><th>航次ID</th><th>推荐动作</th><th>理由</th><th>风险评估</th><th>状态</th></tr>
+                    ${data.recommended_schedules.map((r, i) => {
+                        const statusBadge = r.is_recommended 
+                            ? '<span class="badge badge-success">推荐</span>' 
+                            : '<span class="badge badge-danger">不推荐</span>';
+                        return `<tr class="${!r.is_recommended ? 'risk-row' : ''}">
+                            <td><b>${i + 1}</b> (${r.priority_score}分)</td>
+                            <td>${r.voyage_id}</td>
+                            <td>${r.recommended_action}</td>
+                            <td style="font-size:12px;">${r.reason}</td>
+                            <td style="font-size:12px;">${r.risk_assessment}</td>
+                            <td>${statusBadge}</td>
+                        </tr>`;
+                    }).join('')}
+                </table>
+            </div>
+        </div>
+    </div>`;
+
+    html += `<div class="viz-section" style="margin-bottom:20px;">
+        <div class="viz-panel no-margin">
+            <h3>📊 风险排名 TOP 10</h3>
+            <div style="max-height:300px;overflow-y:auto;">
+                <table class="layer-detail-table">
+                    <tr><th>排名</th><th>航次ID</th><th>船只</th><th>粮食品类</th><th>风险指数</th><th>风险等级</th><th>预警数</th><th>优先级</th><th>状态</th></tr>
+                    ${data.risk_ranking.slice(0, 10).map(r => {
+                        const riskColor = r.risk_level.includes('极高') ? 'var(--danger)' : r.risk_level.includes('高') ? 'var(--warn)' : r.risk_level.includes('中') ? 'var(--accent)' : 'var(--success)';
+                        const unresBadge = r.has_unresolved ? '<span class="badge badge-danger" style="margin-left:4px;">未闭环</span>' : '';
+                        return `<tr>
+                            <td><b style="color:${r.rank <= 3 ? 'var(--danger)' : 'var(--text)'}">#${r.rank}</b></td>
+                            <td>${r.voyage_id}</td>
+                            <td>${r.ship_name}</td>
+                            <td>${r.grain_type}</td>
+                            <td style="color:${riskColor};font-weight:600;">${r.risk_score.toFixed(3)}</td>
+                            <td>${r.risk_level}${unresBadge}</td>
+                            <td>${r.warning_count} (高风险${r.high_risk_count})</td>
+                            <td>${r.priority}</td>
+                            <td>${r.status}</td>
+                        </tr>`;
+                    }).join('')}
+                </table>
+            </div>
+        </div>
+        <div class="viz-panel no-margin">
+            <h3>⏰ 延期影响评估</h3>
+            <div style="max-height:300px;overflow-y:auto;">`;
+    if (data.delay_assessment.length === 0) {
+        html += '<div style="color:var(--success);padding:20px;text-align:center;">✅ 当前无延期航次</div>';
+    } else {
+        html += `<table class="layer-detail-table">
+            <tr><th>航次ID</th><th>船只</th><th>延期天数</th><th>预计到达</th><th>影响等级</th><th>预估损失(吨)</th><th>经济损失(元)</th></tr>
+            ${data.delay_assessment.map(d => {
+                const impactColor = d.impact_level === '严重' ? 'var(--danger)' : d.impact_level === '中等' ? 'var(--warn)' : 'var(--accent)';
+                return `<tr>
+                    <td>${d.voyage_id}</td>
+                    <td>${d.ship_name}</td>
+                    <td style="color:${impactColor};font-weight:600;">${d.delay_days}天</td>
+                    <td>${d.estimated_arrival}</td>
+                    <td style="color:${impactColor}">${d.impact_level}</td>
+                    <td>${d.grain_loss_estimate.toFixed(2)}</td>
+                    <td>¥${d.economic_loss_estimate.toFixed(0)}</td>
+                </tr>`;
+            }).join('')}
+        </table>`;
+    }
+    html += `</div>
+        </div>
+    </div>`;
+
+    html += `<div class="viz-section" style="margin-bottom:20px;">
+        <div class="viz-panel no-margin">
+            <h3>⚠ 冲突检测 (${data.conflicts.length})</h3>
+            <div style="max-height:250px;overflow-y:auto;">`;
+    if (data.conflicts.length === 0) {
+        html += '<div style="color:var(--success);padding:20px;text-align:center;">✅ 当前未检测到严重冲突</div>';
+    } else {
+        data.conflicts.forEach(c => {
+            const sevColor = c.severity === 'high' || c.severity === 'critical' ? 'var(--danger)' : 'var(--warn)';
+            html += `<div class="warning-item level-${c.severity}">
+                <div class="warning-header">
+                    <span class="warning-level-badge" style="background:${sevColor}20;color:${sevColor}">${c.conflict_type}</span>
+                    <span class="warning-type">${c.description}</span>
+                </div>
+                <div class="warning-suggestion">💡 建议：${c.suggestion}</div>
+            </div>`;
+        });
+    }
+    html += `</div>
+        </div>
+        <div class="viz-panel no-margin">
+            <h3>⚓ 港口拥堵情况</h3>
+            <div style="max-height:250px;overflow-y:auto;">
+                <table class="layer-detail-table">
+                    <tr><th>港口</th><th>泊位使用率</th><th>等待航次</th><th>预计等待(天)</th><th>拥堵等级</th></tr>
+                    ${data.port_congestions.map(p => {
+                        const levelColor = p.congestion_level.includes('严重') ? 'var(--danger)' : p.congestion_level.includes('中度') ? 'var(--warn)' : p.congestion_level.includes('轻度') ? 'var(--accent)' : 'var(--success)';
+                        const usagePct = (p.current_berth_usage * 100).toFixed(0);
+                        return `<tr>
+                            <td>${p.port_name}</td>
+                            <td>
+                                <div class="pressure-bar" style="width:100px;">
+                                    <div class="pressure-bar-fill" style="width:${Math.min(100, usagePct)}%;background:${levelColor}"></div>
+                                </div>
+                                <span style="font-size:12px;margin-left:8px;">${usagePct}%</span>
+                            </td>
+                            <td>${p.waiting_voyages}</td>
+                            <td>${p.estimated_wait_days}</td>
+                            <td style="color:${levelColor}">${p.congestion_level}</td>
+                        </tr>`;
+                    }).join('')}
+                </table>
+            </div>
+        </div>
+    </div>`;
+
+    html += `<div class="viz-panel">
+        <h3>📦 资源短缺分析 (${data.resource_shortages.length})</h3>`;
+    if (data.resource_shortages.length === 0) {
+        html += '<div style="color:var(--success);padding:15px;text-align:center;">✅ 当前资源充足，无明显短缺</div>';
+    } else {
+        data.resource_shortages.forEach(r => {
+            const sevColor = r.severity === 'high' || r.severity === 'critical' ? 'var(--danger)' : 'var(--warn)';
+            html += `<div class="warning-item level-${r.severity}">
+                <div class="warning-header">
+                    <span class="warning-level-badge" style="background:${sevColor}20;color:${sevColor}">${r.resource_type}短缺</span>
+                    <span class="warning-type">${r.description}</span>
+                </div>
+                <div class="warning-msg">短缺量：${r.shortage_amount}</div>
+                <div class="warning-msg" style="font-size:12px;color:var(--text2);">受影响航次：${r.affected_voyages.join(', ')}</div>
+            </div>`;
+        });
+    }
+    html += `</div>`;
+
+    main.innerHTML = html;
+    currentView = 'dispatch_dashboard';
+}
+
+async function viewAllVoyages() {
+    try {
+        const voyages = await apiCall('/dispatch/voyages', null, 'GET');
+        allVoyages = voyages;
+        renderVoyageList(voyages);
+    } catch (e) {
+        alert('获取航次列表失败: ' + e.message);
+    }
+}
+
+function renderVoyageList(voyages) {
+    const main = document.getElementById('main_content');
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">📋 全部航次 (${voyages.length})</h2>`;
+    html += `<div style="max-height:calc(100vh - 200px);overflow-y:auto;">
+        <table class="layer-detail-table">
+            <tr>
+                <th>航次ID</th><th>船只</th><th>粮食品类</th><th>重量(吨)</th>
+                <th>起始港</th><th>目的港</th><th>优先级</th><th>状态</th>
+                <th>计划出发</th><th>风险等级</th><th>处置进度</th>
+            </tr>
+            ${voyages.map(v => {
+                const riskColor = v.risk_level === 'critical' || v.risk_level === 'high' ? 'var(--danger)' : v.risk_level === 'medium' ? 'var(--warn)' : 'var(--success)';
+                const statusColor = v.status === 'completed' ? 'var(--success)' : v.status === 'delayed' ? 'var(--danger)' : v.status === 'sailing' ? 'var(--accent)' : 'var(--text)';
+                const progressPct = (v.disposal_progress * 100).toFixed(0);
+                return `<tr onclick="viewVoyageDetail('${v.voyage_id}')" style="cursor:pointer;">
+                    <td><b>${v.voyage_id}</b></td>
+                    <td>${v.ship_name}</td>
+                    <td>${GRAIN_LABELS[v.grain_type] || v.grain_type}</td>
+                    <td>${v.grain_weight}</td>
+                    <td>${getPortName(v.origin_port)}</td>
+                    <td>${getPortName(v.destination_port)}</td>
+                    <td>${VOYAGE_PRIORITY_LABELS[v.priority] || v.priority}</td>
+                    <td style="color:${statusColor}">${VOYAGE_STATUS_LABELS[v.status] || v.status}</td>
+                    <td>${v.planned_departure_date}</td>
+                    <td style="color:${riskColor}">${WARNING_LEVEL_LABELS[v.risk_level] || v.risk_level}</td>
+                    <td>
+                        <div class="pressure-bar" style="width:80px;">
+                            <div class="pressure-bar-fill" style="width:${progressPct}%;background:${v.disposal_progress >= 0.8 ? 'var(--success)' : v.disposal_progress >= 0.5 ? 'var(--warn)' : 'var(--danger)'}"></div>
+                        </div>
+                        <span style="font-size:11px;margin-left:4px;">${progressPct}%</span>
+                    </td>
+                </tr>`;
+            }).join('')}
+        </table>
+    </div>`;
+    main.innerHTML = html;
+    currentView = 'voyage_list';
+}
+
+function getPortName(portId) {
+    const port = allPorts.find(p => p.port_id === portId);
+    return port ? port.port_name : portId;
+}
+
+async function viewAllShips() {
+    try {
+        const ships = await apiCall('/dispatch/ships', null, 'GET');
+        allShips = ships;
+        renderShipList(ships);
+    } catch (e) {
+        alert('获取船只列表失败: ' + e.message);
+    }
+}
+
+function renderShipList(ships) {
+    const main = document.getElementById('main_content');
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">🚢 船只管理 (${ships.length})</h2>`;
+    html += `<div class="scheme-cards">`;
+    ships.forEach(s => {
+        const statusColor = s.status === 'available' ? 'var(--success)' : s.status === 'maintenance' ? 'var(--warn)' : 'var(--accent)';
+        const statusLabel = SHIP_STATUS_LABELS[s.status] || s.status;
+        html += `<div class="scheme-card recommended">
+            <div class="scheme-card-header">
+                <div class="scheme-card-title">${s.ship_name}</div>
+                <div class="scheme-card-rank" style="color:${statusColor}">${statusLabel}</div>
+            </div>
+            <div class="scheme-card-meta">
+                <span>ID: <b>${s.ship_id}</b></span>
+                <span>载重: <b>${s.capacity_tons}吨</b></span>
+                <span>航速: <b>${s.max_speed}节</b></span>
+                <span>船员: <b>${s.crew_count}人</b></span>
+            </div>
+            <div class="scheme-card-scores">
+                <div class="score-item">
+                    <div class="s-value">${s.cabin_length}×${s.cabin_width}m</div>
+                    <div class="s-label">船舱尺寸</div>
+                </div>
+                <div class="score-item">
+                    <div class="s-value">${s.cabin_height}m</div>
+                    <div class="s-label">舱高</div>
+                </div>
+                <div class="score-item">
+                    <div class="s-value" style="color:${statusColor}">${statusLabel}</div>
+                    <div class="s-label">状态</div>
+                </div>
+            </div>
+            ${s.note ? `<div style="font-size:12px;color:var(--text2);margin-top:8px;">${s.note}</div>` : ''}
+        </div>`;
+    });
+    html += `</div>`;
+    main.innerHTML = html;
+    currentView = 'ship_list';
+}
+
+async function viewAllPorts() {
+    try {
+        const ports = await apiCall('/dispatch/ports', null, 'GET');
+        allPorts = ports;
+        renderPortList(ports);
+    } catch (e) {
+        alert('获取港口列表失败: ' + e.message);
+    }
+}
+
+function renderPortList(ports) {
+    const main = document.getElementById('main_content');
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">⚓ 港口信息 (${ports.length})</h2>`;
+    html += `<div class="scheme-cards">`;
+    ports.forEach(p => {
+        html += `<div class="scheme-card alternative">
+            <div class="scheme-card-header">
+                <div class="scheme-card-title">${p.port_name}</div>
+                <div class="scheme-card-rank">${p.berth_count}泊位</div>
+            </div>
+            <div class="scheme-card-meta">
+                <span>ID: <b>${p.port_id}</b></span>
+                <span>泊位: <b>${p.berth_count}个</b></span>
+            </div>
+            <div class="scheme-card-scores">
+                <div class="score-item">
+                    <div class="s-value">${p.loading_rate}</div>
+                    <div class="s-label">装货率(吨/天)</div>
+                </div>
+                <div class="score-item">
+                    <div class="s-value">${p.unloading_rate}</div>
+                    <div class="s-label">卸货率(吨/天)</div>
+                </div>
+                <div class="score-item">
+                    <div class="s-value">${p.storage_capacity}</div>
+                    <div class="s-label">仓储容量(吨)</div>
+                </div>
+            </div>
+            ${p.note ? `<div style="font-size:12px;color:var(--text2);margin-top:8px;">${p.note}</div>` : ''}
+        </div>`;
+    });
+    html += `</div>`;
+    main.innerHTML = html;
+    currentView = 'port_list';
+}
+
+async function viewRiskRanking() {
+    try {
+        const data = await apiCall('/dispatch/plan', {
+            consider_weather: true,
+            consider_port_capacity: true,
+            consider_ship_availability: true,
+            high_risk_block: true
+        });
+        lastDispatchResult = data;
+        renderRiskRankingFull(data.risk_ranking);
+    } catch (e) {
+        alert('获取风险排名失败: ' + e.message);
+    }
+}
+
+function renderRiskRankingFull(ranking) {
+    const main = document.getElementById('main_content');
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">📊 航次风险排名 (${ranking.length})</h2>`;
+    html += `<div style="max-height:calc(100vh - 180px);overflow-y:auto;">
+        <table class="layer-detail-table">
+            <tr>
+                <th>排名</th><th>航次ID</th><th>船只</th><th>粮食品类</th>
+                <th>风险指数</th><th>风险等级</th><th>预警数</th><th>高风险预警</th>
+                <th>未闭环</th><th>优先级</th><th>状态</th>
+            </tr>
+            ${ranking.map(r => {
+                const riskColor = r.risk_level.includes('极高') ? 'var(--danger)' : r.risk_level.includes('高') ? 'var(--warn)' : r.risk_level.includes('中') ? 'var(--accent)' : 'var(--success)';
+                const rankBadge = r.rank <= 3 ? `<span style="color:var(--danger);font-weight:700;">#${r.rank}</span>` : `#${r.rank}`;
+                return `<tr>
+                    <td><b>${rankBadge}</b></td>
+                    <td>${r.voyage_id}</td>
+                    <td>${r.ship_name}</td>
+                    <td>${r.grain_type}</td>
+                    <td style="color:${riskColor};font-weight:600;font-size:14px;">${r.risk_score.toFixed(3)}</td>
+                    <td style="color:${riskColor}">${r.risk_level}</td>
+                    <td>${r.warning_count}</td>
+                    <td style="color:var(--danger)">${r.high_risk_count}</td>
+                    <td>${r.has_unresolved ? '<span class="badge badge-danger">是</span>' : '<span class="badge badge-success">否</span>'}</td>
+                    <td>${r.priority}</td>
+                    <td>${r.status}</td>
+                </tr>`;
+            }).join('')}
+        </table>
+    </div>`;
+    main.innerHTML = html;
+    currentView = 'risk_ranking';
+}
+
+async function viewDelayAssessment() {
+    try {
+        const data = await apiCall('/dispatch/plan', {
+            consider_weather: true,
+            consider_port_capacity: true,
+            consider_ship_availability: true,
+            high_risk_block: true
+        });
+        lastDispatchResult = data;
+        renderDelayAssessmentFull(data.delay_assessment);
+    } catch (e) {
+        alert('获取延期评估失败: ' + e.message);
+    }
+}
+
+function renderDelayAssessmentFull(items) {
+    const main = document.getElementById('main_content');
+    let html = `<h2 style="font-size:18px;margin-bottom:16px;">⏰ 延期影响评估 (${items.length})</h2>`;
+    if (items.length === 0) {
+        html += '<div style="color:var(--success);padding:40px;text-align:center;font-size:16px;">✅ 当前无延期航次，所有航次按计划进行</div>';
+    } else {
+        html += `<div style="max-height:calc(100vh - 180px);overflow-y:auto;">`;
+        items.forEach(d => {
+            const impactColor = d.impact_level === '严重' ? 'var(--danger)' : d.impact_level === '中等' ? 'var(--warn)' : 'var(--accent)';
+            html += `<div class="viz-panel" style="margin-bottom:12px;border-left:4px solid ${impactColor};">
+                <h3 style="color:${impactColor}">${d.voyage_id} - ${d.ship_name} (${d.grain_type})</h3>
+                <div class="monitor-record-cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">
+                    <div class="result-card">
+                        <div class="label">延期天数</div>
+                        <div class="value" style="color:${impactColor}">${d.delay_days}<span style="font-size:14px;color:var(--text2)">天</span></div>
+                    </div>
+                    <div class="result-card">
+                        <div class="label">原计划到达</div>
+                        <div class="value" style="font-size:14px;">${d.original_arrival}</div>
+                    </div>
+                    <div class="result-card">
+                        <div class="label">预计到达</div>
+                        <div class="value" style="font-size:14px;color:${impactColor}">${d.estimated_arrival}</div>
+                    </div>
+                    <div class="result-card">
+                        <div class="label">影响等级</div>
+                        <div class="value" style="color:${impactColor}">${d.impact_level}</div>
+                    </div>
+                </div>
+                <div class="monitor-record-cards" style="grid-template-columns:repeat(2,1fr);margin-bottom:12px;">
+                    <div class="result-card loss">
+                        <div class="label">预估粮食损失</div>
+                        <div class="value">${d.grain_loss_estimate.toFixed(2)}<span style="font-size:14px;color:var(--text2)">吨</span></div>
+                    </div>
+                    <div class="result-card pressure">
+                        <div class="label">预估经济损失</div>
+                        <div class="value">¥${d.economic_loss_estimate.toFixed(0)}</div>
+                    </div>
+                </div>
+                <div style="font-size:13px;margin-bottom:8px;"><b>延期原因：</b>${d.delay_reason}</div>
+                ${d.affected_other_voyages.length > 0 ? `<div style="font-size:13px;margin-bottom:8px;"><b>影响其他航次：</b>${d.affected_other_voyages.join(', ')}</div>` : ''}
+                <div class="warnings-box" style="background:rgba(79,195,247,0.06);border-color:rgba(79,195,247,0.3);">
+                    <h4 style="color:var(--accent)">💡 处置建议</h4>
+                    <ul><li>${d.suggestion}</li></ul>
+                </div>
+            </div>`;
+        });
+        html += `</div>`;
+    }
+    main.innerHTML = html;
+    currentView = 'delay_assessment';
+}
+
+async function createNewVoyage() {
+    const shipId = document.getElementById('disp_new_ship').value;
+    const grainType = document.getElementById('disp_new_grain').value;
+    const grainWeight = parseFloat(document.getElementById('disp_new_weight').value);
+    const originPort = document.getElementById('disp_new_origin').value;
+    const destPort = document.getElementById('disp_new_dest').value;
+    const priority = document.getElementById('disp_new_priority').value;
+    const voyageDays = parseInt(document.getElementById('disp_new_days').value);
+    const depDate = document.getElementById('disp_new_dep').value;
+    const arrDate = document.getElementById('disp_new_arr').value;
+
+    if (!shipId) { alert('请选择船只'); return; }
+    if (!originPort) { alert('请选择起始港口'); return; }
+    if (!destPort) { alert('请选择目的港口'); return; }
+    if (!depDate) { alert('请选择计划出发日期'); return; }
+    if (!arrDate) { alert('请选择计划到达日期'); return; }
+
+    try {
+        const result = await apiCall('/dispatch/voyages', {
+            ship_id: shipId,
+            grain_type: grainType,
+            grain_weight: grainWeight,
+            origin_port: originPort,
+            destination_port: destPort,
+            priority: priority,
+            planned_departure_date: depDate,
+            planned_arrival_date: arrDate,
+            voyage_days: voyageDays,
+            sea_state: 'calm',
+            humidity: 65.0,
+            loading_order: 'even',
+            layers: 6,
+            note: ''
+        });
+        alert(`航次创建成功！\n航次ID: ${result.voyage_id}\n船只: ${result.ship_name}\n风险等级: ${WARNING_LEVEL_LABELS[result.risk_level]}`);
+        loadDispatchData();
+        viewAllVoyages();
+    } catch (e) {
+        alert('创建航次失败: ' + e.message);
+    }
+}
+
+const _originalApiCall = apiCall;
+async function apiCall(endpoint, body, method = 'POST') {
+    if (method === 'GET') {
+        const res = await fetch(API + endpoint, { method: 'GET' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: '请求失败' }));
+            throw new Error(err.detail || '请求出错');
+        }
+        return res.json();
+    }
+    return _originalApiCall(endpoint, body);
 }

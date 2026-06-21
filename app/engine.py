@@ -36,6 +36,31 @@ from app.models import (
     BAG_STATUS_LABELS,
     ROCKING_LEVEL_LABELS,
     ABNORMAL_EVENT_LABELS,
+    Ship,
+    ShipStatus,
+    SHIP_STATUS_LABELS,
+    Port,
+    WeatherCondition,
+    WeatherForecast,
+    VoyagePriority,
+    VOYAGE_PRIORITY_LABELS,
+    VoyageStatus,
+    VOYAGE_STATUS_LABELS,
+    VoyageSchedule,
+    ScheduleConflict,
+    PortCongestionInfo,
+    ResourceShortage,
+    DispatchRecommendation,
+    DispatchDashboard,
+    RiskRankItem,
+    DelayImpactItem,
+    SchedulePlanInput,
+    DispatchResult,
+    ShipCreateInput,
+    PortCreateInput,
+    VoyageCreateInput,
+    VoyageUpdateInput,
+    WeatherCreateInput,
 )
 
 GRAIN_DENSITY_FACTOR = {
@@ -1297,3 +1322,517 @@ def get_disposal_suggestion_api(warning_type: str, warning_level: str) -> dict:
         wl = WarningLevel.medium
     suggestion = _get_disposal_suggestion(wl, warning_type)
     return {"warning_type": warning_type, "warning_level": warning_level, "suggestion": suggestion}
+
+
+_ship_store: dict = {}
+_voyage_schedule_store: dict = {}
+_port_store: dict = {}
+_weather_store: dict = {}
+_ship_counter = 0
+_voyage_schedule_counter = 0
+_port_counter = 0
+_weather_counter = 0
+_dispatch_counter = 0
+_conflict_counter = 0
+
+
+def _next_ship_id():
+    global _ship_counter
+    _ship_counter += 1
+    return f"SHIP_{_ship_counter:04d}"
+
+
+def _next_voyage_schedule_id():
+    global _voyage_schedule_counter
+    _voyage_schedule_counter += 1
+    return f"VSD_{_voyage_schedule_counter:04d}"
+
+
+def _next_port_id():
+    global _port_counter
+    _port_counter += 1
+    return f"PORT_{_port_counter:03d}"
+
+
+def _next_weather_id():
+    global _weather_counter
+    _weather_counter += 1
+    return f"WTH_{_weather_counter:05d}"
+
+
+def _next_dispatch_id():
+    global _dispatch_counter
+    _dispatch_counter += 1
+    return f"DSP_{_dispatch_counter:04d}"
+
+
+def _next_conflict_id():
+    global _conflict_counter
+    _conflict_counter += 1
+    return f"CNF_{_conflict_counter:04d}"
+
+
+def _calculate_voyage_risk(voyage: VoyageSchedule) -> float:
+    base_risk = 0.0
+    if voyage.humidity is not None:
+        if voyage.humidity >= 85:
+            base_risk += 0.4
+        elif voyage.humidity >= 70:
+            base_risk += 0.25
+        elif voyage.humidity >= 55:
+            base_risk += 0.1
+    sea_factors = {
+        SeaState.calm: 0.0,
+        SeaState.slight: 0.1,
+        SeaState.moderate: 0.25,
+        SeaState.rough: 0.45,
+        SeaState.very_rough: 0.65,
+    }
+    base_risk += sea_factors.get(voyage.sea_state, 0.2)
+    if voyage.voyage_days > 20:
+        base_risk += 0.15
+    elif voyage.voyage_days > 15:
+        base_risk += 0.08
+    if voyage.layers > 8:
+        base_risk += 0.1
+    elif voyage.layers > 6:
+        base_risk += 0.05
+    if voyage.delay_days > 5:
+        base_risk += 0.15
+    elif voyage.delay_days > 2:
+        base_risk += 0.08
+    return min(1.0, base_risk)
+
+
+def _init_default_data():
+    if not _port_store:
+        default_ports = [
+            {"port_name": "苏州港", "berth_count": 5, "loading_rate": 200.0, "unloading_rate": 250.0, "storage_capacity": 5000.0},
+            {"port_name": "扬州港", "berth_count": 4, "loading_rate": 180.0, "unloading_rate": 220.0, "storage_capacity": 4000.0},
+            {"port_name": "淮安港", "berth_count": 3, "loading_rate": 150.0, "unloading_rate": 180.0, "storage_capacity": 3000.0},
+            {"port_name": "徐州港", "berth_count": 4, "loading_rate": 160.0, "unloading_rate": 200.0, "storage_capacity": 3500.0},
+            {"port_name": "北京通州港", "berth_count": 6, "loading_rate": 220.0, "unloading_rate": 280.0, "storage_capacity": 6000.0},
+        ]
+        for p in default_ports:
+            pid = _next_port_id()
+            _port_store[pid] = Port(port_id=pid, **p).model_dump()
+
+    if not _ship_store:
+        default_ships = [
+            {"ship_name": "漕运一号", "cabin_length": 8.0, "cabin_width": 3.0, "cabin_height": 2.5, "capacity_tons": 120.0, "max_speed": 8.0, "status": ShipStatus.available, "current_port": "PORT_001", "crew_count": 12},
+            {"ship_name": "漕运二号", "cabin_length": 10.0, "cabin_width": 3.5, "cabin_height": 2.8, "capacity_tons": 180.0, "max_speed": 7.5, "status": ShipStatus.available, "current_port": "PORT_002", "crew_count": 15},
+            {"ship_name": "漕运三号", "cabin_length": 7.5, "cabin_width": 2.8, "cabin_height": 2.2, "capacity_tons": 90.0, "max_speed": 9.0, "status": ShipStatus.available, "current_port": "PORT_003", "crew_count": 10},
+            {"ship_name": "永乐号", "cabin_length": 12.0, "cabin_width": 4.0, "cabin_height": 3.0, "capacity_tons": 250.0, "max_speed": 6.5, "status": ShipStatus.maintenance, "current_port": "PORT_001", "crew_count": 20},
+            {"ship_name": "宣德号", "cabin_length": 9.0, "cabin_width": 3.2, "cabin_height": 2.6, "capacity_tons": 150.0, "max_speed": 8.5, "status": ShipStatus.available, "current_port": "PORT_004", "crew_count": 14},
+        ]
+        for s in default_ships:
+            sid = _next_ship_id()
+            _ship_store[sid] = Ship(ship_id=sid, **s).model_dump()
+
+    if not _voyage_schedule_store:
+        today = date.today()
+        from datetime import timedelta
+        default_voyages = [
+            {"ship_id": "SHIP_0001", "grain_type": GrainType.rice, "grain_weight": 100.0, "origin_port": "PORT_001", "destination_port": "PORT_005", "priority": VoyagePriority.high, "planned_departure_date": today, "planned_arrival_date": today + timedelta(days=15), "voyage_days": 15, "sea_state": SeaState.slight, "humidity": 65.0, "loading_order": LoadingOrder.even, "layers": 6, "status": VoyageStatus.sailing},
+            {"ship_id": "SHIP_0002", "grain_type": GrainType.wheat, "grain_weight": 160.0, "origin_port": "PORT_002", "destination_port": "PORT_005", "priority": VoyagePriority.normal, "planned_departure_date": today + timedelta(days=1), "planned_arrival_date": today + timedelta(days=18), "voyage_days": 17, "sea_state": SeaState.moderate, "humidity": 72.0, "loading_order": LoadingOrder.bottom_heavy, "layers": 7, "status": VoyageStatus.loading},
+            {"ship_id": "SHIP_0003", "grain_type": GrainType.soybean, "grain_weight": 80.0, "origin_port": "PORT_003", "destination_port": "PORT_005", "priority": VoyagePriority.emergency, "planned_departure_date": today + timedelta(days=-3), "planned_arrival_date": today + timedelta(days=10), "voyage_days": 13, "sea_state": SeaState.calm, "humidity": 58.0, "loading_order": LoadingOrder.pyramid, "layers": 5, "status": VoyageStatus.sailing},
+            {"ship_id": "SHIP_0005", "grain_type": GrainType.millet, "grain_weight": 120.0, "origin_port": "PORT_004", "destination_port": "PORT_005", "priority": VoyagePriority.low, "planned_departure_date": today + timedelta(days=5), "planned_arrival_date": today + timedelta(days=22), "voyage_days": 17, "sea_state": SeaState.slight, "humidity": 60.0, "loading_order": LoadingOrder.even, "layers": 6, "status": VoyageStatus.pending},
+            {"ship_id": "SHIP_0001", "grain_type": GrainType.sorghum, "grain_weight": 110.0, "origin_port": "PORT_005", "destination_port": "PORT_001", "priority": VoyagePriority.normal, "planned_departure_date": today + timedelta(days=20), "planned_arrival_date": today + timedelta(days=35), "voyage_days": 15, "sea_state": SeaState.calm, "humidity": 55.0, "loading_order": LoadingOrder.even, "layers": 6, "status": VoyageStatus.pending},
+        ]
+        for v in default_voyages:
+            vid = _next_voyage_schedule_id()
+            ship = _ship_store.get(v["ship_id"], {})
+            ship_name = ship.get("ship_name", "")
+            vs = VoyageSchedule(voyage_id=vid, ship_name=ship_name, **v)
+            vs.risk_score = _calculate_voyage_risk(vs)
+            vs.risk_level = _risk_score_to_warning_level(vs.risk_score)
+            vs.warning_count = 2 if vs.risk_score > 0.5 else 1 if vs.risk_score > 0.3 else 0
+            vs.high_risk_warning_count = 1 if vs.risk_score > 0.7 else 0
+            vs.has_unresolved_high_risk = vs.risk_score > 0.7 and v["status"] != VoyageStatus.completed
+            vs.disposal_progress = 0.0 if vs.has_unresolved_high_risk else 1.0
+            _voyage_schedule_store[vid] = vs.model_dump()
+
+
+_init_default_data()
+
+
+def get_all_ships() -> list:
+    return [Ship(**s) for s in _ship_store.values()]
+
+
+def get_ship(ship_id: str) -> Optional[Ship]:
+    s = _ship_store.get(ship_id)
+    return Ship(**s) if s else None
+
+
+def create_ship(inp: ShipCreateInput) -> Ship:
+    sid = _next_ship_id()
+    ship = Ship(ship_id=sid, **inp.model_dump())
+    _ship_store[sid] = ship.model_dump()
+    return ship
+
+
+def update_ship(ship_id: str, inp: dict) -> Optional[Ship]:
+    if ship_id not in _ship_store:
+        return None
+    _ship_store[ship_id].update(inp)
+    return Ship(**_ship_store[ship_id])
+
+
+def delete_ship(ship_id: str) -> bool:
+    if ship_id not in _ship_store:
+        return False
+    del _ship_store[ship_id]
+    return True
+
+
+def get_all_ports() -> list:
+    return [Port(**p) for p in _port_store.values()]
+
+
+def get_port(port_id: str) -> Optional[Port]:
+    p = _port_store.get(port_id)
+    return Port(**p) if p else None
+
+
+def create_port(inp: PortCreateInput) -> Port:
+    pid = _next_port_id()
+    port = Port(port_id=pid, **inp.model_dump())
+    _port_store[pid] = port.model_dump()
+    return port
+
+
+def get_all_voyages() -> list:
+    return [VoyageSchedule(**v) for v in _voyage_schedule_store.values()]
+
+
+def get_voyage_schedule(voyage_id: str) -> Optional[VoyageSchedule]:
+    v = _voyage_schedule_store.get(voyage_id)
+    return VoyageSchedule(**v) if v else None
+
+
+def create_voyage_schedule(inp: VoyageCreateInput) -> VoyageSchedule:
+    vid = _next_voyage_schedule_id()
+    ship = _ship_store.get(inp.ship_id, {})
+    ship_name = ship.get("ship_name", "")
+    vs = VoyageSchedule(voyage_id=vid, ship_name=ship_name, **inp.model_dump())
+    vs.risk_score = _calculate_voyage_risk(vs)
+    vs.risk_level = _risk_score_to_warning_level(vs.risk_score)
+    _voyage_schedule_store[vid] = vs.model_dump()
+    return vs
+
+
+def update_voyage_schedule(voyage_id: str, inp: VoyageUpdateInput) -> Optional[VoyageSchedule]:
+    if voyage_id not in _voyage_schedule_store:
+        return None
+    update_data = {k: v for k, v in inp.model_dump().items() if v is not None}
+    _voyage_schedule_store[voyage_id].update(update_data)
+    vs = VoyageSchedule(**_voyage_schedule_store[voyage_id])
+    vs.risk_score = _calculate_voyage_risk(vs)
+    vs.risk_level = _risk_score_to_warning_level(vs.risk_score)
+    _voyage_schedule_store[voyage_id] = vs.model_dump()
+    return vs
+
+
+def get_weather_forecasts(port_id: Optional[str] = None) -> list:
+    forecasts = [WeatherForecast(**w) for w in _weather_store.values()]
+    if port_id:
+        forecasts = [w for w in forecasts if w.port_id == port_id]
+    return forecasts
+
+
+def create_weather_forecast(inp: WeatherCreateInput) -> WeatherForecast:
+    wid = _next_weather_id()
+    wf = WeatherForecast(**inp.model_dump())
+    _weather_store[wid] = wf.model_dump()
+    return wf
+
+
+def _generate_dashboard() -> DispatchDashboard:
+    ships = get_all_ships()
+    voyages = get_all_voyages()
+    available_ships = sum(1 for s in ships if s.status == ShipStatus.available)
+    pending_voyages = sum(1 for v in voyages if v.status == VoyageStatus.pending)
+    sailing_voyages = sum(1 for v in voyages if v.status == VoyageStatus.sailing)
+    completed_voyages = sum(1 for v in voyages if v.status == VoyageStatus.completed)
+    delayed_voyages = sum(1 for v in voyages if v.status == VoyageStatus.delayed or v.delay_days > 0)
+    high_risk_voyages = sum(1 for v in voyages if v.risk_level in (WarningLevel.high, WarningLevel.critical))
+    total_warnings = sum(v.warning_count for v in voyages)
+    unresolved_warnings = sum(v.high_risk_warning_count for v in voyages if v.has_unresolved_high_risk)
+    avg_progress = 0.0
+    if voyages:
+        avg_progress = sum(v.disposal_progress for v in voyages) / len(voyages)
+    return DispatchDashboard(
+        total_ships=len(ships),
+        available_ships=available_ships,
+        total_voyages=len(voyages),
+        pending_voyages=pending_voyages,
+        sailing_voyages=sailing_voyages,
+        completed_voyages=completed_voyages,
+        delayed_voyages=delayed_voyages,
+        high_risk_voyages=high_risk_voyages,
+        total_warnings=total_warnings,
+        unresolved_warnings=unresolved_warnings,
+        avg_disposal_progress=round(avg_progress, 4),
+    )
+
+
+def _generate_risk_ranking() -> list:
+    voyages = get_all_voyages()
+    sorted_voyages = sorted(voyages, key=lambda v: v.risk_score, reverse=True)
+    ranking = []
+    for i, v in enumerate(sorted_voyages):
+        ranking.append(RiskRankItem(
+            rank=i + 1,
+            voyage_id=v.voyage_id,
+            ship_name=v.ship_name,
+            grain_type=GRAIN_NAME_CN.get(v.grain_type, v.grain_type),
+            risk_score=v.risk_score,
+            risk_level=WARNING_LEVEL_LABELS.get(v.risk_level, v.risk_level),
+            warning_count=v.warning_count,
+            high_risk_count=v.high_risk_warning_count,
+            has_unresolved=v.has_unresolved_high_risk,
+            priority=VOYAGE_PRIORITY_LABELS.get(v.priority, v.priority),
+            status=VOYAGE_STATUS_LABELS.get(v.status, v.status),
+        ))
+    return ranking
+
+
+def _generate_delay_assessment() -> list:
+    voyages = get_all_voyages()
+    delayed = [v for v in voyages if v.delay_days > 0 or v.status == VoyageStatus.delayed]
+    sorted_delayed = sorted(delayed, key=lambda v: v.delay_days, reverse=True)
+    result = []
+    for v in sorted_delayed:
+        from datetime import timedelta
+        estimated_arrival = v.planned_arrival_date + timedelta(days=v.delay_days)
+        grain_loss = v.grain_weight * (v.delay_days * 0.005 + v.risk_score * 0.02)
+        economic_loss = grain_loss * 3.5
+        impact_level = "严重" if v.delay_days > 7 else "中等" if v.delay_days > 3 else "轻微"
+        affected = []
+        for other in voyages:
+            if other.voyage_id != v.voyage_id and other.ship_id == v.ship_id:
+                affected.append(other.voyage_id)
+        suggestion = ""
+        if impact_level == "严重":
+            suggestion = "建议立即启动应急预案，协调备用船只或改变航线，同时加强粮包监测"
+        elif impact_level == "中等":
+            suggestion = "建议优化靠港顺序，加快装卸速度，减少后续航次影响"
+        else:
+            suggestion = "建议密切关注天气变化，适时调整航速"
+        result.append(DelayImpactItem(
+            voyage_id=v.voyage_id,
+            ship_name=v.ship_name,
+            grain_type=GRAIN_NAME_CN.get(v.grain_type, v.grain_type),
+            original_arrival=v.planned_arrival_date,
+            estimated_arrival=estimated_arrival,
+            delay_days=v.delay_days,
+            delay_reason=v.delay_reason or "天气原因/港口拥堵",
+            impact_level=impact_level,
+            grain_loss_estimate=round(grain_loss, 2),
+            economic_loss_estimate=round(economic_loss, 2),
+            affected_other_voyages=affected,
+            suggestion=suggestion,
+        ))
+    return result
+
+
+def _detect_conflicts() -> list:
+    conflicts = []
+    voyages = get_all_voyages()
+    ships = get_all_ships()
+    ship_voyages = {}
+    for v in voyages:
+        if v.status in (VoyageStatus.completed, VoyageStatus.cancelled):
+            continue
+        if v.ship_id not in ship_voyages:
+            ship_voyages[v.ship_id] = []
+        ship_voyages[v.ship_id].append(v)
+    for ship_id, vlist in ship_voyages.items():
+        if len(vlist) > 1:
+            active = [v for v in vlist if v.status in (VoyageStatus.sailing, VoyageStatus.loading, VoyageStatus.unloading)]
+            pending = [v for v in vlist if v.status == VoyageStatus.pending]
+            if len(active) > 1:
+                ship = _ship_store.get(ship_id, {})
+                conflicts.append(ScheduleConflict(
+                    conflict_id=_next_conflict_id(),
+                    conflict_type="船只冲突",
+                    severity=WarningLevel.high,
+                    description=f"船只 {ship.get('ship_name', ship_id)} 同时分配给 {len(active)} 个航次执行",
+                    involved_voyages=[v.voyage_id for v in active],
+                    involved_ships=[ship_id],
+                    involved_ports=[v.origin_port for v in active] + [v.destination_port for v in active],
+                    suggestion="建议重新分配船只或调整航次时间，避免同一船只并发执行",
+                ))
+    port_voyages = {}
+    for v in voyages:
+        if v.status in (VoyageStatus.completed, VoyageStatus.cancelled):
+            continue
+        for port_id in [v.origin_port, v.destination_port]:
+            if port_id not in port_voyages:
+                port_voyages[port_id] = []
+            port_voyages[port_id].append(v)
+    for port_id, vlist in port_voyages.items():
+        port = _port_store.get(port_id, {})
+        berth_count = port.get("berth_count", 3)
+        active_count = sum(1 for v in vlist if v.status in (VoyageStatus.loading, VoyageStatus.unloading, VoyageStatus.sailing))
+        if active_count > berth_count:
+            conflicts.append(ScheduleConflict(
+                conflict_id=_next_conflict_id(),
+                conflict_type="港口拥堵",
+                severity=WarningLevel.medium,
+                description=f"{port.get('port_name', port_id)} 泊位不足，{active_count} 艘船竞争 {berth_count} 个泊位",
+                involved_voyages=[v.voyage_id for v in vlist],
+                involved_ships=[v.ship_id for v in vlist],
+                involved_ports=[port_id],
+                suggestion="建议调整靠港时间，错峰装卸，或申请临时增加作业泊位",
+            ))
+    return conflicts
+
+
+def _analyze_port_congestion() -> list:
+    congestions = []
+    voyages = get_all_voyages()
+    for port_id, port_data in _port_store.items():
+        port = Port(**port_data)
+        active_voyages = [v for v in voyages if (v.origin_port == port_id or v.destination_port == port_id) and v.status not in (VoyageStatus.completed, VoyageStatus.cancelled)]
+        usage_ratio = len(active_voyages) / max(port.berth_count, 1)
+        waiting = sum(1 for v in active_voyages if v.status == VoyageStatus.pending)
+        wait_days = waiting * 1.5
+        if usage_ratio >= 1.0:
+            level = "严重拥堵"
+        elif usage_ratio >= 0.7:
+            level = "中度拥堵"
+        elif usage_ratio >= 0.4:
+            level = "轻度拥堵"
+        else:
+            level = "畅通"
+        congestions.append(PortCongestionInfo(
+            port_id=port_id,
+            port_name=port.port_name,
+            current_berth_usage=round(usage_ratio, 2),
+            waiting_voyages=waiting,
+            estimated_wait_days=round(wait_days, 1),
+            congestion_level=level,
+        ))
+    return sorted(congestions, key=lambda x: x.current_berth_usage, reverse=True)
+
+
+def _analyze_resource_shortages() -> list:
+    shortages = []
+    voyages = get_all_voyages()
+    ships = get_all_ships()
+    pending_voyages = [v for v in voyages if v.status == VoyageStatus.pending]
+    available_ships = [s for s in ships if s.status == ShipStatus.available]
+    if len(pending_voyages) > len(available_ships):
+        shortages.append(ResourceShortage(
+            resource_type="可用船只",
+            shortage_amount=len(pending_voyages) - len(available_ships),
+            severity=WarningLevel.medium if len(pending_voyages) - len(available_ships) <= 2 else WarningLevel.high,
+            description=f"待调度航次 {len(pending_voyages)} 个，但可用船只仅 {len(available_ships)} 艘",
+            affected_voyages=[v.voyage_id for v in pending_voyages[len(available_ships):]],
+        ))
+    total_pending_weight = sum(v.grain_weight for v in pending_voyages)
+    total_capacity = sum(s.capacity_tons for s in available_ships)
+    if total_pending_weight > total_capacity:
+        shortages.append(ResourceShortage(
+            resource_type="运载能力",
+            shortage_amount=round(total_pending_weight - total_capacity, 1),
+            severity=WarningLevel.high,
+            description=f"待运粮食 {total_pending_weight:.0f} 吨，可用运力 {total_capacity:.0f} 吨，运力不足",
+            affected_voyages=[v.voyage_id for v in pending_voyages],
+        ))
+    return shortages
+
+
+def _generate_recommendations(inp: SchedulePlanInput) -> list:
+    voyages = get_all_voyages()
+    ships = get_all_ships()
+    recommendations = []
+    pending_voyages = [v for v in voyages if v.status == VoyageStatus.pending]
+    priority_order = {VoyagePriority.emergency: 0, VoyagePriority.high: 1, VoyagePriority.normal: 2, VoyagePriority.low: 3}
+    pending_voyages.sort(key=lambda v: (priority_order.get(v.priority, 2), v.risk_score))
+    available_ships = [s for s in ships if s.status == ShipStatus.available]
+    if not inp.consider_ship_availability:
+        available_ships = ships
+    used_ships = set()
+    for voyage in pending_voyages:
+        is_blocked = inp.high_risk_block and voyage.has_unresolved_high_risk
+        suitable_ships = [s for s in available_ships if s.ship_id not in used_ships and s.capacity_tons >= voyage.grain_weight]
+        if not suitable_ships:
+            suitable_ships = [s for s in available_ships if s.ship_id not in used_ships]
+        if suitable_ships:
+            ship = suitable_ships[0]
+            used_ships.add(ship.ship_id)
+            priority_score = _calculate_priority_score(voyage, ship, inp)
+            reason_parts = []
+            if voyage.priority == VoyagePriority.emergency:
+                reason_parts.append("紧急优先级航次")
+            elif voyage.priority == VoyagePriority.high:
+                reason_parts.append("高优先级航次")
+            if voyage.risk_level == WarningLevel.normal:
+                reason_parts.append("风险较低")
+            elif voyage.risk_level == WarningLevel.low:
+                reason_parts.append("风险可控")
+            else:
+                reason_parts.append(f"风险等级: {WARNING_LEVEL_LABELS.get(voyage.risk_level, voyage.risk_level)}")
+            reason = "；".join(reason_parts)
+            risk_assessment = f"风险指数 {voyage.risk_score:.3f}，{WARNING_LEVEL_LABELS.get(voyage.risk_level, voyage.risk_level)}"
+            if is_blocked:
+                recommendations.append(DispatchRecommendation(
+                    recommendation_id=_next_dispatch_id(),
+                    voyage_id=voyage.voyage_id,
+                    ship_id=ship.ship_id,
+                    recommended_action="暂不调度（高风险未闭环）",
+                    recommended_departure_date=None,
+                    priority_score=priority_score,
+                    reason=f"高风险且未闭环，按照规则暂不推荐调度。{reason}",
+                    risk_assessment=risk_assessment,
+                    is_recommended=False,
+                ))
+            else:
+                recommendations.append(DispatchRecommendation(
+                    recommendation_id=_next_dispatch_id(),
+                    voyage_id=voyage.voyage_id,
+                    ship_id=ship.ship_id,
+                    recommended_action="建议立即调度",
+                    recommended_departure_date=voyage.planned_departure_date,
+                    priority_score=priority_score,
+                    reason=reason,
+                    risk_assessment=risk_assessment,
+                    is_recommended=True,
+                ))
+    recommendations.sort(key=lambda r: r.priority_score, reverse=True)
+    return recommendations
+
+
+def _calculate_priority_score(voyage: VoyageSchedule, ship: Ship, inp: SchedulePlanInput) -> float:
+    score = 0.0
+    priority_weights = {VoyagePriority.emergency: 40, VoyagePriority.high: 25, VoyagePriority.normal: 15, VoyagePriority.low: 5}
+    score += priority_weights.get(voyage.priority, 15)
+    risk_factor = 1.0 - voyage.risk_score
+    score += risk_factor * 25
+    capacity_match = min(ship.capacity_tons, voyage.grain_weight) / max(ship.capacity_tons, voyage.grain_weight, 0.01)
+    score += capacity_match * 15
+    score += 20 * (voyage.grain_weight / max(ship.capacity_tons, 0.01))
+    return round(score, 2)
+
+
+def generate_dispatch_plan(inp: SchedulePlanInput) -> DispatchResult:
+    dashboard = _generate_dashboard()
+    recommendations = _generate_recommendations(inp)
+    risk_ranking = _generate_risk_ranking()
+    delay_assessment = _generate_delay_assessment()
+    conflicts = _detect_conflicts()
+    port_congestions = _analyze_port_congestion()
+    resource_shortages = _analyze_resource_shortages()
+    return DispatchResult(
+        dashboard=dashboard,
+        recommended_schedules=recommendations,
+        risk_ranking=risk_ranking,
+        delay_assessment=delay_assessment,
+        conflicts=conflicts,
+        port_congestions=port_congestions,
+        resource_shortages=resource_shortages,
+        generation_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )

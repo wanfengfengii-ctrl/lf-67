@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from typing import Optional
 from app.models import (
     SimulationRequest,
     SimulationResult,
@@ -14,6 +15,17 @@ from app.models import (
     WarningConfirmInput,
     AbnormalReportInput,
     VoyageSummaryOutput,
+    Ship,
+    Port,
+    VoyageSchedule,
+    ShipCreateInput,
+    PortCreateInput,
+    VoyageCreateInput,
+    VoyageUpdateInput,
+    WeatherForecast,
+    WeatherCreateInput,
+    SchedulePlanInput,
+    DispatchResult,
 )
 from app.engine import (
     simulate,
@@ -29,6 +41,21 @@ from app.engine import (
     report_abnormal,
     get_voyage_summary,
     get_disposal_suggestion_api,
+    get_all_ships,
+    get_ship,
+    create_ship,
+    update_ship,
+    delete_ship,
+    get_all_ports,
+    get_port,
+    create_port,
+    get_all_voyages,
+    get_voyage_schedule,
+    create_voyage_schedule,
+    update_voyage_schedule,
+    get_weather_forecasts,
+    create_weather_forecast,
+    generate_dispatch_plan,
 )
 
 router = APIRouter()
@@ -168,3 +195,102 @@ def api_get_disposal_suggestion(
     warning_level: str = Query(...)
 ):
     return get_disposal_suggestion_api(warning_type, warning_level)
+
+
+@router.get("/dispatch/ships", response_model=list[Ship])
+def api_get_all_ships():
+    return get_all_ships()
+
+
+@router.get("/dispatch/ships/{ship_id}", response_model=Ship)
+def api_get_ship(ship_id: str):
+    result = get_ship(ship_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="船只不存在")
+    return result
+
+
+@router.post("/dispatch/ships", response_model=Ship)
+def api_create_ship(inp: ShipCreateInput):
+    try:
+        return create_ship(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.delete("/dispatch/ships/{ship_id}")
+def api_delete_ship(ship_id: str):
+    if not delete_ship(ship_id):
+        raise HTTPException(status_code=404, detail="船只不存在")
+    return {"status": "success", "message": "船只已删除"}
+
+
+@router.get("/dispatch/ports", response_model=list[Port])
+def api_get_all_ports():
+    return get_all_ports()
+
+
+@router.get("/dispatch/ports/{port_id}", response_model=Port)
+def api_get_port(port_id: str):
+    result = get_port(port_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="港口不存在")
+    return result
+
+
+@router.post("/dispatch/ports", response_model=Port)
+def api_create_port(inp: PortCreateInput):
+    try:
+        return create_port(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/dispatch/voyages", response_model=list[VoyageSchedule])
+def api_get_all_voyages():
+    return get_all_voyages()
+
+
+@router.get("/dispatch/voyages/{voyage_id}", response_model=VoyageSchedule)
+def api_get_voyage_schedule(voyage_id: str):
+    result = get_voyage_schedule(voyage_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="航次不存在")
+    return result
+
+
+@router.post("/dispatch/voyages", response_model=VoyageSchedule)
+def api_create_voyage_schedule(inp: VoyageCreateInput):
+    try:
+        return create_voyage_schedule(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch("/dispatch/voyages/{voyage_id}", response_model=VoyageSchedule)
+def api_update_voyage_schedule(voyage_id: str, inp: VoyageUpdateInput):
+    result = update_voyage_schedule(voyage_id, inp)
+    if not result:
+        raise HTTPException(status_code=404, detail="航次不存在")
+    return result
+
+
+@router.get("/dispatch/weather", response_model=list[WeatherForecast])
+def api_get_weather_forecasts(port_id: Optional[str] = Query(None)):
+    return get_weather_forecasts(port_id)
+
+
+@router.post("/dispatch/weather", response_model=WeatherForecast)
+def api_create_weather_forecast(inp: WeatherCreateInput):
+    try:
+        return create_weather_forecast(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/dispatch/plan", response_model=DispatchResult)
+def api_generate_dispatch_plan(inp: SchedulePlanInput):
+    try:
+        return generate_dispatch_plan(inp)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
